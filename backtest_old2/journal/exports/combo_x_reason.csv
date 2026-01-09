@@ -1,0 +1,9 @@
+combo,reason,count
+wyckoff_range=True | deviation=False | liquidity_sweep=False | ob_before_sweep=False,NO_DEVIATION,14003
+wyckoff_range=True | deviation=True | liquidity_sweep=False | ob_before_sweep=False,NO_SWEEP,12532
+wyckoff_range=True | deviation=True | liquidity_sweep=True | ob_before_sweep=True,OK,1734
+wyckoff_range=True | deviation=False | liquidity_sweep=True | ob_before_sweep=True,NO_DEVIATION,1482
+wyckoff_range=False | deviation=True | liquidity_sweep=False | ob_before_sweep=False,NO_RANGE,153
+wyckoff_range=False | deviation=False | liquidity_sweep=False | ob_before_sweep=False,NO_RANGE,88
+wyckoff_range=False | deviation=False | liquidity_sweep=True | ob_before_sweep=True,NO_RANGE,7
+wyckoff_range=False | deviation=False | liquidity_sweep=True | ob_before_sweep=False,NO_RANGE,1
