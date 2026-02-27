@@ -55,12 +55,20 @@ def main():
                 "idx", "timestamp", "reason", "side",
                 "entry", "sl", "tp", "rr", "score", "notes",
                 "outcome", "exit_price", "exit_idx", "bars_held",
-                "signal_idx"
+                "symbol"
             ])
 
         i = 0
         while (candle := engine.next_candle()) is not None:
             ctx = context_builder.build(i)
+
+            # FAIL-OPEN: jei context_builder neduoda atr_pct, pasiskaičiuojam minimaliai
+            if "atr_pct" not in ctx:
+                # paprasta aproksimacija: (high-low)/close dabartinei žvakei
+                c = float(df_15m.iloc[i]["close"])
+                h = float(df_15m.iloc[i]["high"])
+                l = float(df_15m.iloc[i]["low"])
+                ctx["atr_pct"] = (h - l) / c if c else 0.0
             allowed, reason = rules.check(ctx)
             score = signals.evaluate(ctx) if allowed else 0.0
 
@@ -101,14 +109,36 @@ def main():
                     max_bars=200
                 )
 
-                notes = notes_raw.replace(",", ";")  # kad nesugadintų CSV
-                rr = float(ctx.get("rr", 0.0))
+                # idx: gali būti i (signal idx) arba entry_idx — pasirink vieną.
+                # Aš siūlau idx=i (trade id pagal signal candle), o entry_idx padėti į notes.
+
+                notes = notes_raw.replace(",", ";")
+                notes = f"{notes} entry_idx={entry_idx}"
+                # RR apskaičiavimas iš entry/sl/tp (fail-open)
+                rr = 0.0
+                try:
+                    if side == "LONG":
+                        denom = (entry - sl)
+                        rr = (tp - entry) / denom if denom != 0 else 0.0
+                    else:  # SHORT
+                        denom = (sl - entry)
+                        rr = (entry - tp) / denom if denom != 0 else 0.0
+                except Exception:
+                    rr = 0.0
 
                 writer.writerow([
-                    entry_idx, ts, reason, side,
-                    entry, sl, tp, rr, float(score), notes,
-                    result.outcome, result.exit_price, result.exit_idx, result.bars_held,
-                    i
+                    i,  # idx
+                    ts,  # timestamp (entry candle time)
+                    reason,  # reason
+                    side,  # side
+                    entry, sl, tp,  # entry/sl/tp
+                    rr, float(score),  # rr/score
+                    notes,  # notes (su entry_idx viduj)
+                    result.outcome,  # outcome
+                    result.exit_price,  # exit_price
+                    result.exit_idx,  # exit_idx
+                    result.bars_held,  # bars_held
+                    "BTCUSDT"  # symbol (paskutinis)
                 ])
                 f.flush()
 

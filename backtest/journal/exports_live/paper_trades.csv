@@ -1,2 +1,1 @@
-timestamp,model,side,entry,sl,tp,ctx_sub_label,phase,regime,trend_dir,status
-2025-12-12 16:30:00,TDP_REENTRY,LONG,89600.0,88334.4,92131.2,TDP_BOT,PHASE_TREND_UP,TREND_UP,UP,OPEN
+timestamp,signal_ts,symbol,model,side,entry,sl,tp,rr,ctx_sub_label,phase,regime,trend_dir,status

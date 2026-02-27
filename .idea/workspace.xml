@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="b6312cf6-6784-48e6-9a27-35e9809bd31e" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/backtest/journal/run_entry_model_multi_csvdir.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/backtest/tools/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/backtest/tools/check_csv_history_span.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.gitignore" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/PythonProject.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/PythonProject.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/a2_check.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/data/_init_.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/engine/entry_model.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/engine/entry_model.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/engine/entry_model_v1_trend_long_clean.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/engine/entry_model_v1_trend_long_clean.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/engine/signal.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/engine/signal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/exports_live/paper_trades.csv" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/exports_live/paper_trades.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/exports_live/signals_live.csv" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/exports_live/signals_live.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/exports_live/state/bybit_BTCUSDT_30_last_candle.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/exports_live/state/bybit_BTCUSDT_30_last_seen.txt" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/exports_live/state/bybit_BTCUSDT_30_last_seen.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/exports_trades/entries_generated.csv" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/exports_trades/entries_generated.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/exports_trades/trades_simulated.csv" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/exports_trades/trades_simulated.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/filter_trades.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/filter_trades.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/live_entries.csv" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/live_entries.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/live_signal_runner.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/live_signal_runner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/live_state.txt" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/live_state.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/paper_executor.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/paper_executor.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/run_entry_model.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/run_entry_model.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/journal/trades.csv" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/journal/trades.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/live/regime_controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/live/regime_controller.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest/run_backtest.py" beforeDir="false" afterPath="$PROJECT_DIR$/backtest/run_backtest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/.idea/.gitignore" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/.idea/backtest.iml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/.idea/inspectionProfiles/profiles_settings.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/.idea/misc.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/.idea/modules.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/data/BTCUSDT_15m.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/data/_init_.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/data/loader.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/data/resample.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/context_builder.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/entry_model.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/execution.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/replay.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/rules.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/engine/signal.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/candles.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/candles_ohlc.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/candles_old.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/config.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports/combo_x_reason.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports/daily_funnel.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports/reason_breakdown.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports/reason_x_score_bucket.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_old/combo_x_reason.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_old/daily_funnel.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_old/reason_breakdown.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_old/reason_x_score_bucket.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/best_combo_by_expectancy.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/combo_stats.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/combo_x_score_bucket.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/entries_generated.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/entries_tdp_mvp.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/grid_results.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/grid_results_expectancy.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/grid_results_tdp_only.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/score_bucket_stats.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/signals.html" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_filtered.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_filtered_dirmatch.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_filtered_tts_tdp.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_model.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_simulated.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_with_ctx.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades/trades_with_labels.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades_old/best_combo_by_expectancy.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades_old/combo_stats.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades_old/combo_x_score_bucket.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/exports_trades_old/score_bucket_stats.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/filter_trades.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/grid_search.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/grid_search_expectancy.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/grid_search_tdp_only.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/logger.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/plot_entry.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/plot_entry_all.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/plot_labels.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/plot_signals.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/run_entry_model.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/stats.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/stats_candles.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/trades.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/trades_old.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/trades_old1.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/trades_old2.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/journal/trades_short.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_old2/run_backtest.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/backtest_patched.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/bot_min_sources.zip" beforeDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;customColor&quot;: &quot;&quot;,
+  &quot;associatedIndex&quot;: 5
+}</component>
+  <component name="ProjectId" id="38SsjRjymN4IPoK0fJ8jqEhCSC1" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/37065/PycharmProjects/PythonProject&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-0978a7220b69-9867c7d4c0a4-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.28294.336" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="b6312cf6-6784-48e6-9a27-35e9809bd31e" name="Changes" comment="" />
+      <created>1768804455167</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1768804455167</updated>
+    </task>
+    <servers />
+  </component>
+</project>

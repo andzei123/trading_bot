@@ -110,6 +110,9 @@ def simulate_trades(
     partial_at_r: Optional[float] = None,     # e.g. 1.0 => take partial at +1R
     partial_frac: float = 0.7,                # fraction closed at partial
     candle_cache: Optional[CandleCache] = None,
+
+    # schema support (DEV3/DEV-C): keep keyword-only at the end to avoid breaking positional callers
+    symbol: str = "",
 ) -> pd.DataFrame:
     """
     Simulates outcomes and returns per-trade R-multiple with optional BE/partials.
@@ -239,6 +242,7 @@ def simulate_trades(
         rows.append({
             "id": i,
             "timestamp": pd.Timestamp(e.timestamp),
+            "symbol": str(symbol).strip(),
             "status": "OK",
             "side": side,
             "entry": entry_px,

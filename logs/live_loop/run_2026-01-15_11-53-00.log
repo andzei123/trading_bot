@@ -1,0 +1,3 @@
+[2026-01-15T11:53:00.737266+00:00] CMD: python -c print('hello')
+
+hello

@@ -1,0 +1,20 @@
+OK: True
+Reason: OK
+
+Rules:
+  initial_equity=10000.0
+  max_daily_loss_pct=0.05
+  max_total_loss_pct=0.1
+  max_drawdown_pct=0.1
+  profit_target_pct=0.1
+  min_trading_days=None
+
+Diagnostics:
+  min_equity: 9898.891891456497
+  total_loss_pct: -0.010110810854350347
+  worst_day_pnl_pct: -0.03690489218120544
+  max_drawdown_pct: -0.06071319730419078
+  peak_equity: 12568.433211844858
+  trough_equity: 11805.363446449577
+  max_dd_pct: -0.06071319730419078
+  profit_target_equity: 11000.0

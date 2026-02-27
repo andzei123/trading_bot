@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import random
+import os
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -364,24 +365,28 @@ def label_tts_tdp(c: pd.DataFrame, RANGE_LEN: int | None = None) -> pd.DataFrame
 
     tts_core_dbg = c["tts_impulse_ok"] & c["tts_range_ok"] & c["tts_dev_ok"]
 
-    print("\n[TTS DEBUG]")
-    print("total candles:", len(c))
-    print("impulse_ok :", int(c["tts_impulse_ok"].sum()))
-    print("range_ok   :", int(c["tts_range_ok"].sum()))
-    print("dev_ok     :", int(c["tts_dev_ok"].sum()))
-    print("tts_core   :", int(tts_core_dbg.sum()))
-    print("breakout_up:", int(c["tts_bu_ok"].sum()))
-    print("breakout_dn:", int(c["tts_bd_ok"].sum()))
-    if REQUIRE_TREND_FOR_TTS:
-        print("trend_up_ok:", int(c["tts_trend_up_ok"].sum()))
-        print("trend_dn_ok:", int(c["tts_trend_dn_ok"].sum()))
-    print("TTS_UP:", int(tts_up.sum()))
-    print("TTS_DN:", int(tts_dn.sum()))
+    # print TTS debug only when explicitly enabled
+    import os
+    _tts_debug = os.getenv("TTS_DEBUG", "").strip().lower() in ("1", "true", "yes", "y")
+    if _tts_debug:
+        print("\n[TTS DEBUG]")
+        print("total candles:", len(c))
+        print("impulse_ok :", int(c["tts_impulse_ok"].sum()))
+        print("range_ok   :", int(c["tts_range_ok"].sum()))
+        print("dev_ok     :", int(c["tts_dev_ok"].sum()))
+        print("tts_core   :", int(tts_core_dbg.sum()))
+        print("breakout_up:", int(c["tts_bu_ok"].sum()))
+        print("breakout_dn:", int(c["tts_bd_ok"].sum()))
+        if REQUIRE_TREND_FOR_TTS:
+            print("trend_up_ok:", int(c["tts_trend_up_ok"].sum()))
+            print("trend_dn_ok:", int(c["tts_trend_dn_ok"].sum()))
+        print("TTS_UP:", int(tts_up.sum()))
+        print("TTS_DN:", int(tts_dn.sum()))
 
-    for col in ["impulse_atr", "range_width_atr", "breakout_up_atr"]:
-        s = pd.to_numeric(c[col], errors="coerce").dropna()
-        if len(s):
-            print(f"{col} q:", s.quantile([0.5, 0.7, 0.8, 0.9]).to_dict())
+        for col in ["impulse_atr", "range_width_atr", "breakout_up_atr"]:
+            s = pd.to_numeric(c[col], errors="coerce").dropna()
+            if len(s):
+                print(f"{col} q:", s.quantile([0.5, 0.7, 0.8, 0.9]).to_dict())
 
     # ===== TDP =====
     tdp_impulse_ok = c["impulse_atr"] >= TDP_IMPULSE_MIN
@@ -718,3 +723,13 @@ def merge_market_regime(df: pd.DataFrame) -> pd.DataFrame:
         out["atr_pct"] = pd.to_numeric(out["atr_pct"], errors="coerce").fillna(0.0)
 
     return out
+
+
+# -----------------------------------------------------------------------------
+# Bybit helper (shared)
+# -----------------------------------------------------------------------------
+try:
+    from backtest.journal.bybit_loader import load_bybit_latest  # type: ignore
+except Exception:
+    # fallback: allow importing module even if requests missing in some env
+    load_bybit_latest = None  # type: ignore

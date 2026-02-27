@@ -1,111 +1,173 @@
+"""
+Paper executor: reads a snapshot of live signals (signals_live.csv) and maintains
+a lightweight paper trades ledger (paper_trades.csv).
+
+Design goals:
+- Never crash the live loop.
+- Always ensure output CSV exists with stable header.
+- Tolerant to empty/missing signals file (creates paper_trades header and exits).
+- Uses `signal_ts` if present for trade timestamp; falls back to `timestamp`.
+"""
+
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
+from typing import Optional
+
 import pandas as pd
 
 DEFAULT_SIGNALS = Path("backtest/journal/exports_live/signals_live.csv")
 DEFAULT_OUT = Path("backtest/journal/exports_live/paper_trades.csv")
-DEFAULT_STATE = Path("backtest/journal/exports_live/paper_state.json")
+
+PAPER_COLUMNS = [
+    "timestamp",
+    "signal_ts",
+    "symbol",
+    "model",
+    "side",
+    "entry",
+    "sl",
+    "tp",
+    "rr",
+    "ctx_sub_label",
+    "phase",
+    "regime",
+    "trend_dir",
+    "status",
+]
 
 
 def _ensure_parent(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
 
 
-def load_signals(path: Path) -> pd.DataFrame:
-    if not path.exists():
+def ensure_paper_trades_file(out_path: str | Path = DEFAULT_OUT) -> Path:
+    out_p = Path(out_path)
+    _ensure_parent(out_p)
+    if (not out_p.exists()) or out_p.stat().st_size == 0:
+        pd.DataFrame(columns=PAPER_COLUMNS).to_csv(out_p, index=False)
+    return out_p
+
+
+def _read_signals(in_csv: str | Path) -> pd.DataFrame:
+    p = Path(in_csv)
+    if (not p.exists()) or p.stat().st_size == 0:
         return pd.DataFrame()
-    df = pd.read_csv(path)
-    if df.empty:
-        return df
-    if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    return df.sort_values("timestamp").reset_index(drop=True)
+    try:
+        df = pd.read_csv(p, engine="python", on_bad_lines="skip")
+    except Exception:
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-
-def load_paper_trades(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame(columns=[
-            "timestamp", "model", "side", "entry", "sl", "tp",
-            "ctx_sub_label", "phase", "regime", "trend_dir",
-            "status"
-        ])
-    df = pd.read_csv(path)
+    # Normalize timestamps
+    if "signal_ts" in df.columns:
+        df["signal_ts"] = pd.to_datetime(df["signal_ts"], utc=True, errors="coerce")
     if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+
+    # Sort so newest is last
+    if "signal_ts" in df.columns and df["signal_ts"].notna().any():
+        df = df.sort_values("signal_ts")
+    elif "timestamp" in df.columns and df["timestamp"].notna().any():
+        df = df.sort_values("timestamp")
+
     return df
 
 
-def has_open_position(paper_df: pd.DataFrame) -> bool:
-    if paper_df.empty:
-        return False
-    # status == OPEN reiškia, kad yra aktyvi pozicija
-    return (paper_df["status"].astype(str).str.upper() == "OPEN").any()
+def run_paper_executor(
+    in_csv: str | Path = DEFAULT_SIGNALS,
+    out_csv: str | Path = DEFAULT_OUT,
+    *,
+    allow_multiple: bool = False,
+) -> int:
+    """
+    Update paper_trades.csv from signals_live.csv.
 
+    Returns number of newly opened trades appended.
+    """
+    out_p = ensure_paper_trades_file(out_csv)
 
-def append_trade(out_path: Path, trade_row: dict) -> None:
-    _ensure_parent(out_path)
-    df = load_paper_trades(out_path)
-    df = pd.concat([df, pd.DataFrame([trade_row])], ignore_index=True)
-    df.to_csv(out_path, index=False)
+    # ===== PYRAMID telemetry (Sprint-5 DEV2) =====
+    try:
+        # import tik dėl telemetry / fail-open
+        from backtest.risk import pyramiding as _pyr  # noqa: F401
+        print("[PYRAMID] executor=paper status=READY reason=BOOT")
+    except Exception as _pe:
+        print(f"[PYRAMID] executor=paper status=SKIP reason=IMPORT_ERROR err={repr(_pe)}")
 
+    df_sig = _read_signals(in_csv)
+    if df_sig.empty:
+        # Keep file present; also touch it so dashboards/ops can see the cycle ran.
+        try:
+            out_p.touch(exist_ok=True)
+        except Exception:
+            pass
+        print("No signals (signals_live.csv missing/empty) -> nothing to open.")
+        print("[PYRAMID] executor=paper status=SKIP reason=NO_SIGNALS")
+        return 0
 
-def run_once(signals_csv: Path, out_csv: Path, allow_multiple: bool = False) -> None:
-    sig = load_signals(signals_csv)
-    if sig.empty:
-        print("No signals file / empty signals.")
-        return
+    try:
+        df_tr = pd.read_csv(out_p, engine="python", on_bad_lines="skip")
+    except Exception:
+        df_tr = pd.DataFrame(columns=PAPER_COLUMNS)
 
-    paper = load_paper_trades(out_csv)
+    if df_tr is None or df_tr.empty:
+        df_tr = pd.DataFrame(columns=PAPER_COLUMNS)
 
-    # paimam paskutinį signalą
-    last_sig = sig.iloc[-1].to_dict()
+    # Consider "OPEN" rows as active positions
+    has_open = False
+    try:
+        has_open = (df_tr["status"].astype(str).str.upper() == "OPEN").any()
+    except Exception:
+        has_open = False
 
-    # dedupe: jei tas pats timestamp+side+model jau yra paper_trades -> skip
-    if not paper.empty:
-        exists = (
-            (paper["timestamp"] == pd.to_datetime(last_sig.get("timestamp"))) &
-            (paper["side"].astype(str) == str(last_sig.get("side"))) &
-            (paper["model"].astype(str) == str(last_sig.get("model")))
-        )
-        if exists.any():
-            print("Latest signal already processed -> skip.")
-            return
+    if has_open and (not allow_multiple):
+        # Do not open new positions if one is already open
+        return 0
 
-    if (not allow_multiple) and has_open_position(paper):
-        print("OPEN position exists -> skip new entry (set --allow-multiple to override).")
-        return
+    # We open from the latest signal only (snapshot semantics)
+    last = df_sig.iloc[-1].to_dict()
 
-    # suformuojam paper trade
-    trade = {
-        "timestamp": pd.to_datetime(last_sig.get("timestamp")),
-        "model": last_sig.get("model", ""),
-        "side": last_sig.get("side", ""),
-        "entry": float(last_sig.get("entry", 0.0)),
-        "sl": float(last_sig.get("sl", 0.0)),
-        "tp": float(last_sig.get("tp", 0.0)),
-        "ctx_sub_label": last_sig.get("ctx_sub_label", ""),
-        "phase": last_sig.get("phase", ""),
-        "regime": last_sig.get("regime", ""),
-        "trend_dir": last_sig.get("trend_dir", ""),
+    ts = last.get("signal_ts") if "signal_ts" in df_sig.columns else None
+    if ts is None or (isinstance(ts, float) and pd.isna(ts)):
+        ts = last.get("timestamp")
+
+    row_out = {
+        "timestamp": str(pd.to_datetime(ts, utc=True, errors="coerce")) if ts is not None else "",
+        "signal_ts": str(pd.to_datetime(last.get("signal_ts"), utc=True, errors="coerce")) if last.get("signal_ts") is not None else "",
+        "symbol": str(last.get("symbol", "")),
+        "model": last.get("model", ""),
+        "side": last.get("side", ""),
+        "entry": last.get("entry", ""),
+        "sl": last.get("sl", ""),
+        "tp": last.get("tp", ""),
+        "rr": last.get("rr", ""),
+        "ctx_sub_label": last.get("ctx_sub_label", ""),
+        "phase": last.get("phase", ""),
+        "regime": last.get("regime", ""),
+        "trend_dir": last.get("trend_dir", ""),
         "status": "OPEN",
     }
 
-    append_trade(out_csv, trade)
-    print("PAPER TRADE OPENED:")
-    print(trade)
+    df_new = pd.DataFrame([row_out]).reindex(columns=PAPER_COLUMNS)
+
+    # Append (header only if empty)
+    write_header = (not out_p.exists()) or out_p.stat().st_size == 0
+    df_new.to_csv(out_p, mode="a", header=write_header, index=False)
+
+    return 1
 
 
-def main():
+def main(argv: Optional[list[str]] = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--signals", default=str(DEFAULT_SIGNALS))
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--allow-multiple", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
-    run_once(Path(args.signals), Path(args.out), allow_multiple=args.allow_multiple)
+    run_paper_executor(args.signals, args.out, allow_multiple=bool(args.allow_multiple))
 
 
 if __name__ == "__main__":

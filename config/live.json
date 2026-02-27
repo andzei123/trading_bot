@@ -1,0 +1,50 @@
+{
+  "mode": "paper_signal_only",
+  "timezone": "UTC",
+
+  "symbols": ["ETHUSDT", "XRPUSDT", "SOLUSDT"],
+  "source": "bybit",
+  "bybit_category": "linear",
+  "bybit_interval": "30",
+  "bybit_candles": 1500,
+
+  "emit_last_candles": 6,
+  "loop_interval_seconds": 60,
+
+  "paths": {
+    "out_csv": "backtest/journal/live_entries.csv",
+    "state_path": "backtest/journal/live_state.txt",
+    "events_csv": "backtest/journal/live_events.csv",
+    "errors_log": "logs/errors.log",
+    "liq_state_json": "data/liquidations/liquidation_state.json",
+    "news_events_json": "config/news_events.json",
+    "macro_dir": "data/macro"
+  },
+
+  "strategy": {
+    "mode": "combined",
+    "rr": 2.0,
+    "sl_atr_buffer": 0.15,
+    "require_impulse_before_tdp": true,
+    "impulse_lookback": 10,
+    "impulse_size_atr": 1.0,
+    "tdp_dev_lookback": 8,
+    "tts_retest_lookback": 24
+  },
+
+  "filters": {
+    "news_blackout": {
+      "enabled": true,
+      "minutes_before": 20,
+      "minutes_after": 20
+    },
+    "macro": {
+      "enabled": false,
+      "alt_mode_risk_multiplier": 1.0,
+      "base_risk_multiplier": 1.0
+    },
+    "liquidations": {
+      "enabled": false
+    }
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, List, Dict
+import logging
 
 import numpy as np
 import pandas as pd
@@ -10,6 +11,46 @@ from backtest.journal.gates import allow_entry, GateConfig  # palikta dėl suder
 
 # --- feature toggles (MVP) ---
 ENABLE_TTS_RETEST = False  # keep OFF until TTS logic is validated
+
+# ============================================================
+# DEV1 — Regime Drift weighting (SPRINT-3.3)
+# Applies trend_weight/range_weight to entry scores.
+# trend_weight/range_weight are expected via ctx.attrs or ctx columns.
+# ============================================================
+def _apply_regime_drift_weights(entries: list[Entry], ctx: pd.DataFrame) -> list[Entry]:
+    tw = 1.0
+    rw = 1.0
+    try:
+        if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+            tw = float(ctx.attrs.get("trend_weight", tw) or tw)
+            rw = float(ctx.attrs.get("range_weight", rw) or rw)
+    except Exception:
+        pass
+    # optional columns (last row)
+    try:
+        if "trend_weight" in ctx.columns and len(ctx) > 0:
+            tw = float(ctx["trend_weight"].iloc[-1])
+        if "range_weight" in ctx.columns and len(ctx) > 0:
+            rw = float(ctx["range_weight"].iloc[-1])
+    except Exception:
+        pass
+
+    for e in entries:
+        # base score: RR from levels (safe)
+        try:
+            risk = abs(float(e.entry) - float(e.sl))
+            rr0 = abs(float(e.tp) - float(e.entry)) / max(1e-9, risk)
+        except Exception:
+            rr0 = 0.0
+
+        model_u = str(getattr(e, "model", "") or "").upper()
+        if model_u == "TDP_REENTRY":  # trend
+            e.score = float(rr0) * float(tw)
+        elif model_u.startswith("RANGE"):  # range
+            e.score = float(rr0) * float(rw)
+        else:
+            e.score = float(rr0)
+    return entries
 
 
 # ============================================================
@@ -33,6 +74,8 @@ class Entry:
     trend_strength: Optional[float] = None
     atr_pct: Optional[float] = None
     phase: Optional[str] = None
+    # --- scoring / ranking (used by runner for drift weighting + clustering) ---
+    score: float = 0.0
 
 
 # -----------------------------
@@ -124,6 +167,9 @@ def simulate_trades(
     cooldown_bars_after_loss: int = 0,             # e.g. 1–2
     atr_pct_min: Optional[float] = None,           # e.g. 0.0015
     atr_pct_max: Optional[float] = None,           # e.g. 0.01
+
+    # schema support (DEV3/DEV-C): keep keyword-only at the end to avoid breaking positional callers
+    symbol: str = "",
 ) -> pd.DataFrame:
     """
     Simulates outcomes and returns per-trade R-multiple with optional BE/partials.
@@ -305,6 +351,7 @@ def simulate_trades(
         rows.append({
             "id": i,
             "timestamp": pd.Timestamp(e.timestamp),
+            "symbol": str(symbol).strip(),
             "status": "OK",
             "side": side,
             "entry": entry_px,
@@ -359,6 +406,8 @@ def generate_trend_entries(
     reclaim_buf_atr: float,
     reclaim_lookahead: int,
     had_imp_down_window: int,
+    debug_entry_filters: bool = False,
+    symbol: str = "",
 ) -> list[Entry]:
 
     c = ctx.copy().sort_values("timestamp").reset_index(drop=True)
@@ -369,21 +418,41 @@ def generate_trend_entries(
 
     entries: list[Entry] = []
 
+    # ---------------------------
+    # debug: entry candidate filters
+    # ---------------------------
+    def _dbg(reason: str, extra: str = "") -> None:
+        if not debug_entry_filters:
+            return
+        tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+        if extra:
+            print(f"{tag} {reason} ({extra})")
+        else:
+            print(f"{tag} {reason}")
+
     recent_high = c["high"].rolling(tdp_dev_lookback).max()
     recent_low = c["low"].rolling(tdp_dev_lookback).min()
 
     # =================================================
     # TDP SHORT (trend continuation)
     # =================================================
+    dev_up_recent = c["dev_up"].fillna(False).astype(bool).rolling(tdp_dev_lookback).max().fillna(False).astype(bool)
+
     reentry_short = (
-        (c["sub_label"] == "TDP_TOP")
-        & c["dev_up"].rolling(tdp_dev_lookback).max().fillna(False)
-        & (c["phase"] == "PHASE_TREND_DOWN")
+            (c["sub_label"] == "TDP_TOP")
+            & dev_up_recent
+            & (c["phase"] == "PHASE_TREND_DOWN")
     )
 
+    base_short = reentry_short.copy()
     if require_impulse_before_tdp:
         reentry_short &= c["impulse_recent"] & (c["impulse_dir"] == "UP")
 
+    if debug_entry_filters:
+        b = int(base_short.sum())
+        a = int(reentry_short.sum())
+        if b > 0 and a == 0:
+            _dbg("TDP_SHORT_REMOVED_BY_IMPULSE", f"base={b} after=0 (need impulse_recent & dir==UP)")
     for i in np.where(reentry_short.values)[0]:
         entry_px = float(c.loc[i, "close"])
         atr = float(c.loc[i, "atr"])
@@ -410,9 +479,8 @@ def generate_trend_entries(
     # =================================================
     # TDP LONG (trend continuation via sweep->reclaim)
     # =================================================
-    dev_dn_recent = c["dev_dn"].rolling(tdp_dev_lookback).max().fillna(False)
-    imp_down = (c["impulse_recent"] & (c["impulse_dir"] == "DOWN")).fillna(False)
-    had_imp_down = imp_down.rolling(had_imp_down_window).max().fillna(False)
+    dev_dn_recent = c["dev_dn"].fillna(False).astype(bool).rolling(tdp_dev_lookback).max().fillna(False).astype(bool)
+
 
     buf = reclaim_buf_atr * c["atr"]
     sweep = c["low"] < (c["range_lo"] - buf)
@@ -421,15 +489,35 @@ def generate_trend_entries(
     future_reclaim = reclaim.rolling(reclaim_lookahead).max().shift(-(reclaim_lookahead - 1))
     future_reclaim = future_reclaim.fillna(False)
 
-    setup_long = (
-        (c["sub_label"] == "TDP_BOT")
-        & dev_dn_recent
-        & had_imp_down
-        & sweep
-        & future_reclaim
-        & (c["phase"] == "PHASE_TREND_UP")
+    # --- base (no impulse required) ---
+    reentry_long = (
+            (c["sub_label"] == "TDP_BOT")
+            & dev_dn_recent
+            & sweep
+            & future_reclaim
+            & (c["phase"] == "PHASE_TREND_UP")
     )
 
+    base_long = reentry_long.copy()
+
+    # --- impulse gate (ONLY when enabled) ---
+    if require_impulse_before_tdp:
+        imp_down = (c["impulse_recent"] & (c["impulse_dir"] == "DOWN")).fillna(False)
+        had_imp_down = imp_down.rolling(had_imp_down_window).max().fillna(False)
+        reentry_long &= had_imp_down
+
+    setup_long = reentry_long
+
+    if debug_entry_filters:
+        base = ((c["sub_label"] == "TDP_BOT") & dev_dn_recent & (c["phase"] == "PHASE_TREND_UP")).fillna(False)
+        b = int(base.sum())
+        a = int(setup_long.sum())
+        if b > 0 and a == 0:
+            # Figure which gate killed it (rough breakdown)
+            had = int((base & had_imp_down).sum())
+            sw = int((base & had_imp_down & sweep).sum())
+            fr = int((base & had_imp_down & sweep & future_reclaim).sum())
+            _dbg("TDP_LONG_FILTER_BREAKDOWN", f"base={b} had_imp_down={had} sweep={sw} future_reclaim={fr} final={a}")
     for i in np.where(setup_long.values)[0]:
         j_end = min(len(c) - 1, i + reclaim_lookahead - 1)
         reclaim_window = reclaim.iloc[i:j_end + 1]
@@ -461,7 +549,54 @@ def generate_trend_entries(
             phase=str(c.loc[j, "phase"]),
         ))
 
-    return entries
+
+    # ============================================================
+    # C1) Side policy fallback (phase-based)
+    # Enforce phase/side consistency even if side-selector/TTS gate is off.
+    #   - PHASE_TREND_UP   -> only LONG trend setups
+    #   - PHASE_TREND_DOWN -> only SHORT trend setups
+    #   - PHASE_RANGE      -> range_short (+ range_long if enabled)
+    # ============================================================
+    try:
+        phase_now = str(ctx.get("phase", "") or "").upper()
+    except Exception:
+        phase_now = ""
+    if not phase_now:
+        try:
+            if "phase" in c.columns and len(c) > 0:
+                phase_now = str(c["phase"].iloc[-1] or "").upper()
+        except Exception:
+            phase_now = ""
+
+    # "enable_range_long" may not be available in every generator scope; default to False safely.
+    enable_range_long_flag = bool(locals().get("enable_range_long", False))
+
+    if phase_now == "PHASE_TREND_UP":
+        entries = [
+            e for e in entries
+            if str(getattr(e, "side", "")).upper() == "LONG"
+            and str(getattr(e, "model", "")).upper() == "TDP_REENTRY"
+        ]
+    elif phase_now == "PHASE_TREND_DOWN":
+        entries = [
+            e for e in entries
+            if str(getattr(e, "side", "")).upper() == "SHORT"
+            and str(getattr(e, "model", "")).upper() == "TDP_REENTRY"
+        ]
+    elif phase_now == "PHASE_RANGE":
+        if enable_range_long_flag:
+            entries = [e for e in entries if str(getattr(e, "model", "")).upper().startswith("RANGE_")]
+        else:
+            entries = [
+                e for e in entries
+                if str(getattr(e, "model", "")).upper().startswith("RANGE_")
+                and str(getattr(e, "side", "")).upper() != "LONG"
+            ]
+
+        if debug_entry_filters:
+            tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+            print(f"{tag} generate_entries_from_ctx returned {len(entries)} entries")
+        return entries
 
 
 
@@ -501,10 +636,154 @@ def _enable_range_bot_long_mvp(c: pd.DataFrame, idx: int) -> bool:
 # Range generator
 # ============================================================
 
+
+
+def _generate_range_top_short_v2(
+    c: pd.DataFrame,
+    *,
+    sl_atr_buffer: float,
+    dev_buf_atr: float,
+    reclaim_buf_atr: float,
+    retest_tol_atr: float,
+    reclaim_lookahead: int,
+    retest_lookahead: int,
+    min_range_width_atr: float,
+    cooldown_candles: int,
+    debug_entry_filters: bool = False,
+    symbol: str = "",
+) -> list[Entry]:
+    """RANGE_TOP_SHORT_V2 (BTC-first, stable)
+
+    Logic: sweep_up -> reclaim -> retest -> SHORT to mid.
+
+    sweep   : high > range_hi + dev_buf_atr * atr
+    reclaim : close < range_hi - reclaim_buf_atr * atr   (within reclaim_lookahead)
+    retest  : high >= range_hi - retest_tol_atr * atr AND close < range_hi - reclaim_buf_atr * atr
+              (within retest_lookahead after reclaim)
+
+    Blocks:
+      - range width must be >= min_range_width_atr (ATR-normalized)
+      - anti-late: skip if close <= mid (already at/under mid)
+      - cooldown after an entry
+    """
+    if c is None or c.empty:
+        return []
+
+    tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+
+    # width gate (per candle)
+    range_width_atr = (c["range_hi"] - c["range_lo"]).abs() / c["atr"]
+    width_ok = (range_width_atr >= float(min_range_width_atr)).fillna(False)
+
+    entries: list[Entry] = []
+    n = len(c)
+    i = 0
+
+    while i < n:
+        if not bool(width_ok.iloc[i]):
+            if debug_entry_filters:
+                print(f"{tag} RANGE_WIDTH_TOO_SMALL idx={i}")
+            i += 1
+            continue
+
+        atr_i = float(c.loc[i, "atr"])
+        hi_i = float(c.loc[i, "range_hi"])
+
+        # sweep
+        dev_up_level = hi_i + float(dev_buf_atr) * atr_i
+        if float(c.loc[i, "high"]) <= dev_up_level:
+            i += 1
+            continue
+
+        # reclaim search
+        j_reclaim = None
+        sweep_high = float(c.loc[i, "high"])
+        j_end = min(n - 1, i + int(reclaim_lookahead))
+        for j in range(i, j_end + 1):
+            sweep_high = max(sweep_high, float(c.loc[j, "high"]))
+
+            atr_j = float(c.loc[j, "atr"])
+            hi_j = float(c.loc[j, "range_hi"])
+            close_j = float(c.loc[j, "close"])
+
+            if close_j < (hi_j - float(reclaim_buf_atr) * atr_j):
+                j_reclaim = j
+                break
+
+        if j_reclaim is None:
+            if debug_entry_filters:
+                print(f"{tag} RANGE_TOP_NO_RECLAIM idx={i} lookahead={reclaim_lookahead}")
+            i += 1
+            continue
+
+        # retest search
+        k_entry = None
+        k_end = min(n - 1, j_reclaim + int(retest_lookahead))
+        for k in range(j_reclaim, k_end + 1):
+            atr_k = float(c.loc[k, "atr"])
+            hi_k = float(c.loc[k, "range_hi"])
+            high_k = float(c.loc[k, "high"])
+            close_k = float(c.loc[k, "close"])
+
+            if (high_k >= (hi_k - float(retest_tol_atr) * atr_k)) and (close_k < (hi_k - float(reclaim_buf_atr) * atr_k)):
+                mid_k = float((float(c.loc[k, "range_hi"]) + float(c.loc[k, "range_lo"])) / 2.0)
+                if close_k <= mid_k:
+                    # too late (already at/under mid)
+                    continue
+                k_entry = k
+                break
+
+        if k_entry is None:
+            if debug_entry_filters:
+                print(f"{tag} RANGE_TOP_NO_RETEST idx={i} reclaim_idx={j_reclaim} lookahead={retest_lookahead}")
+            i += 1
+            continue
+
+        entry_px = float(c.loc[k_entry, "close"])
+        atr_e = float(c.loc[k_entry, "atr"])
+        sl = float(sweep_high + float(sl_atr_buffer) * atr_e)
+        tp = float((float(c.loc[k_entry, "range_hi"]) + float(c.loc[k_entry, "range_lo"])) / 2.0)
+
+        # sanity: TP < entry < SL
+        if not (tp < entry_px < sl):
+            i = k_entry + 1
+            continue
+
+        risk = sl - entry_px
+        if risk <= 0:
+            i = k_entry + 1
+            continue
+
+        entries.append(Entry(
+            timestamp=pd.Timestamp(c.loc[k_entry, "timestamp"]),
+            model="RANGE_TOP_SHORT_V2",
+            side="SHORT",
+            entry=entry_px,
+            sl=sl,
+            tp=tp,
+            meta="RANGE_TOP_SHORT v2: sweep_up -> reclaim -> retest -> mid",
+            ctx_sub_label="RANGE_TOP_SHORT",
+            regime=str(c.loc[k_entry, "regime"]) if "regime" in c.columns else None,
+            trend_dir=str(c.loc[k_entry, "trend_dir"]) if "trend_dir" in c.columns else None,
+            trend_strength=float(c.loc[k_entry, "trend_strength"]) if "trend_strength" in c.columns else None,
+            atr_pct=float(c.loc[k_entry, "atr_pct"]) if "atr_pct" in c.columns else None,
+            phase=str(c.loc[k_entry, "phase"]) if "phase" in c.columns else "PHASE_RANGE",
+        ))
+
+        i = k_entry + int(max(1, cooldown_candles))
+
+    return entries
+
+
+
 def generate_range_entries(
     ctx: pd.DataFrame,
-    rr_long: float,                 # palikta suderinamumui (TP = mid)
+    rr_long: float,                 # kept for backwards compatibility (TP=mid)
     sl_atr_buffer: float,
+
+    # router / regime controller flags
+    enable_range_short: bool = True,
+    enable_range_long: bool = False,  # ignored (no longs in v2)
 
     # v2 params
     dev_buf_atr: float = 0.08,
@@ -514,17 +793,18 @@ def generate_range_entries(
     retest_lookahead: int = 36,
     min_range_width_atr: float = 4.0,
     cooldown_candles: int = 6,
+    debug_entry_filters: bool = False,
+    symbol: str = "",
 ) -> list[Entry]:
-    """
-    RANGE_FADE:
-      - Core: RANGE_TOP_SHORT (enabled)
-      - Optional: RANGE_BOT_LONG (gated, default OFF)
-        Gate: phase==PHASE_RANGE AND trend_dir in {UP,NEUTRAL} AND regime in {BULL,ACCUMULATION}
+    """RANGE router (BTC-first)
 
-    Team note:
-      Range bottom longs were tested with multiple filters; baseline had no positive expectancy on BTC,
-      so longs are OFF by default and only enabled under bullish regime gate.
+    ✅ Only: RANGE_TOP_SHORT_V2
+    ✅ Only: PHASE_RANGE (filtered inside)
+    ❌ No LONGs (enable_range_long ignored)
     """
+
+    if not enable_range_short:
+        return []
 
     c = ctx.copy().sort_values("timestamp").reset_index(drop=True)
     phase_u = _phase_upper(c)
@@ -535,6 +815,9 @@ def generate_range_entries(
     needed = ["timestamp", "high", "low", "close", "atr", "range_hi", "range_lo"]
     for col in needed:
         if col not in c.columns:
+            if debug_entry_filters:
+                tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+                print(f"{tag} RANGE_MISSING_COLUMN col={col}")
             return []
 
     # clean numeric
@@ -544,7 +827,7 @@ def generate_range_entries(
     if c.empty:
         return []
 
-    # ensure regime fields exist (for gate + logging)
+    # ensure regime fields exist for logging/export
     for col, default in [
         ("regime", ""),
         ("trend_dir", ""),
@@ -555,272 +838,33 @@ def generate_range_entries(
         if col not in c.columns:
             c[col] = default
 
-    # bullish helper: use open if exists, else close > prev_close
-    has_open = "open" in c.columns
-    if has_open:
-        c["open"] = pd.to_numeric(c["open"], errors="coerce")
+    # delegate to stable v2 module
+    out = _generate_range_top_short_v2(
+        c,
+        sl_atr_buffer=float(sl_atr_buffer),
+        dev_buf_atr=float(dev_buf_atr),
+        reclaim_buf_atr=float(reclaim_buf_atr),
+        retest_tol_atr=float(retest_tol_atr),
+        reclaim_lookahead=int(reclaim_lookahead),
+        retest_lookahead=int(retest_lookahead),
+        min_range_width_atr=float(min_range_width_atr),
+        cooldown_candles=int(cooldown_candles),
+        debug_entry_filters=debug_entry_filters,
+        symbol=symbol,
+    )
 
-    def is_bullish(idx: int) -> bool:
-        cl = float(c.loc[idx, "close"])
-        if has_open and pd.notna(c.loc[idx, "open"]):
-            op = float(c.loc[idx, "open"])
-            return cl > op
-        if idx <= 0:
-            return True
-        prev = float(c.loc[idx - 1, "close"])
-        return cl > prev
+    # lock: ensure router guarantees are never violated
+    for e in out:
+        if str(getattr(e, "model", "")) != "RANGE_TOP_SHORT_V2":
+            raise AssertionError(f"RANGE router lock violated: model={getattr(e, 'model', None)}")
+        if str(getattr(e, "ctx_sub_label", "")) != "RANGE_TOP_SHORT":
+            raise AssertionError(f"RANGE router lock violated: ctx_sub_label={getattr(e, 'ctx_sub_label', None)}")
+        if str(getattr(e, "side", "")).upper() != "SHORT":
+            raise AssertionError(f"RANGE router lock violated: side={getattr(e, 'side', None)}")
+        if str(getattr(e, "phase", "")).upper() != "PHASE_RANGE":
+            raise AssertionError(f"RANGE router lock violated: phase={getattr(e, 'phase', None)}")
 
-    # width gate
-    range_width_atr = (c["range_hi"] - c["range_lo"]).abs() / c["atr"]
-    width_ok = range_width_atr >= float(min_range_width_atr)
-
-    entries: list[Entry] = []
-    n = len(c)
-    i = 0
-
-    while i < n:
-        if not bool(width_ok.iloc[i]):
-            i += 1
-            continue
-
-        atr_i = float(c.loc[i, "atr"])
-        lo_i = float(c.loc[i, "range_lo"])
-        hi_i = float(c.loc[i, "range_hi"])
-
-        dev_dn_level = lo_i - dev_buf_atr * atr_i
-        dev_up_level = hi_i + dev_buf_atr * atr_i
-
-        low_i = float(c.loc[i, "low"])
-        high_i = float(c.loc[i, "high"])
-
-        swept_down = low_i < dev_dn_level
-        swept_up = high_i > dev_up_level
-
-        if not (swept_down or swept_up):
-            i += 1
-            continue
-
-        # =========================================================
-        # RANGE_BOT_LONG (gated)
-        # =========================================================
-        if swept_down:
-            enable_range_long = _enable_range_bot_long_mvp(c, i)
-            if not enable_range_long:
-                # cooldown so we don't rescan every candle near bottom
-                i += int(max(1, cooldown_candles))
-                continue
-
-            # --- BOT LONG logic (kept minimal but robust) ---
-            j_reclaim = None
-            sweep_low = low_i
-
-            j_end = min(n - 1, i + reclaim_lookahead)
-            for j in range(i, j_end + 1):
-                sweep_low = min(sweep_low, float(c.loc[j, "low"]))
-
-                atr_j = float(c.loc[j, "atr"])
-                lo_j = float(c.loc[j, "range_lo"])
-                close_j = float(c.loc[j, "close"])
-
-                if close_j > (lo_j + reclaim_buf_atr * atr_j):
-                    j_reclaim = j
-                    break
-
-            if j_reclaim is None:
-                i += 1
-                continue
-
-            # reclaim candle bullish filter
-            if not is_bullish(j_reclaim):
-                i += 1
-                continue
-
-            # find retest
-            k_entry = None
-            k_end = min(n - 1, j_reclaim + retest_lookahead)
-            for k in range(j_reclaim, k_end + 1):
-                atr_k = float(c.loc[k, "atr"])
-                lo_k = float(c.loc[k, "range_lo"])
-                low_k = float(c.loc[k, "low"])
-                close_k = float(c.loc[k, "close"])
-
-                if (low_k <= (lo_k + retest_tol_atr * atr_k)) and (close_k > (lo_k + reclaim_buf_atr * atr_k)):
-                    mid_k = float((c.loc[k, "range_hi"] + c.loc[k, "range_lo"]) / 2.0)
-                    if mid_k <= close_k:
-                        continue
-                    k_entry = k
-                    break
-
-            if k_entry is None:
-                i += 1
-                continue
-
-            # VARIANT 1: impulse confirmation (anti falling-knife)
-            confirm_lookahead = 3
-            body_min_atr = 0.20
-
-            k_confirm = None
-            k2_end = min(n - 1, k_entry + confirm_lookahead)
-            for u in range(k_entry, k2_end + 1):
-                atr_u = float(c.loc[u, "atr"])
-                close_u = float(c.loc[u, "close"])
-
-                if "open" in c.columns:
-                    open_u = float(c.loc[u, "open"])
-                else:
-                    open_u = float(c.loc[u - 1, "close"]) if u > 0 else close_u
-
-                prev_high = float(c.loc[u - 1, "high"]) if u > 0 else -1e18
-
-                strong_green = (close_u > open_u) and ((close_u - open_u) >= body_min_atr * atr_u)
-                bos = close_u > prev_high
-
-                if strong_green or bos:
-                    k_confirm = u
-                    break
-
-            if k_confirm is None:
-                i += 1
-                continue
-
-            k_entry = k_confirm
-
-            # VARIANT 2: higher-low filter
-            if k_entry > 0:
-                prev_low = float(c.loc[k_entry - 1, "low"])
-                cur_low = float(c.loc[k_entry, "low"])
-                if cur_low <= prev_low:
-                    i += 1
-                    continue
-
-            # entry bullish
-            if not is_bullish(k_entry):
-                i = k_entry + int(max(1, cooldown_candles))
-                continue
-
-            entry_px = float(c.loc[k_entry, "close"])
-            atr_e = float(c.loc[k_entry, "atr"])
-            sl = float(sweep_low - sl_atr_buffer * atr_e)
-            tp = float((c.loc[k_entry, "range_hi"] + c.loc[k_entry, "range_lo"]) / 2.0)
-
-            if not (sl < entry_px < tp):
-                i = k_entry + 1
-                continue
-
-            # reward/risk sanity (avoid flat trades)
-            risk = entry_px - sl
-            reward = tp - entry_px
-            if risk <= 0:
-                i = k_entry + 1
-                continue
-            if (reward / max(risk, 1e-9)) < 0.8:
-                i = k_entry + int(max(1, cooldown_candles))
-                continue
-
-            entries.append(Entry(
-                timestamp=pd.Timestamp(c.loc[k_entry, "timestamp"]),
-                model="RANGE_FADE_LONG",
-                side="LONG",
-                entry=entry_px,
-                sl=sl,
-                tp=tp,
-                meta="range bot long (GATED): sweep_dn -> reclaim -> retest + confirm + higher-low -> mid",
-                ctx_sub_label="RANGE_BOT_LONG",
-                regime=str(c.loc[k_entry, "regime"]),
-                trend_dir=str(c.loc[k_entry, "trend_dir"]),
-                trend_strength=float(c.loc[k_entry, "trend_strength"]),
-                atr_pct=float(c.loc[k_entry, "atr_pct"]),
-                phase=str(c.loc[k_entry, "phase"]),
-            ))
-
-            i = k_entry + int(max(1, cooldown_candles))
-            continue
-
-        # =========================================================
-        # RANGE_TOP_SHORT (core)
-        # =========================================================
-        if swept_up:
-            j_reclaim = None
-            sweep_high = high_i
-
-            j_end = min(n - 1, i + reclaim_lookahead)
-            for j in range(i, j_end + 1):
-                sweep_high = max(sweep_high, float(c.loc[j, "high"]))
-
-                atr_j = float(c.loc[j, "atr"])
-                hi_j = float(c.loc[j, "range_hi"])
-                close_j = float(c.loc[j, "close"])
-
-                if close_j < (hi_j - reclaim_buf_atr * atr_j):
-                    j_reclaim = j
-                    break
-
-            if j_reclaim is None:
-                i += 1
-                continue
-
-            k_entry = None
-            k_end = min(n - 1, j_reclaim + retest_lookahead)
-            for k in range(j_reclaim, k_end + 1):
-                atr_k = float(c.loc[k, "atr"])
-                hi_k = float(c.loc[k, "range_hi"])
-                high_k = float(c.loc[k, "high"])
-                close_k = float(c.loc[k, "close"])
-
-                if (high_k >= (hi_k - retest_tol_atr * atr_k)) and (close_k < (hi_k - reclaim_buf_atr * atr_k)):
-                    mid_k = float((c.loc[k, "range_hi"] + c.loc[k, "range_lo"]) / 2.0)
-
-                    # anti-late-entry filter: don't short if already at/below mid
-                    if mid_k >= close_k:
-                        continue
-
-                    k_entry = k
-                    break
-
-            if k_entry is None:
-                i += 1
-                continue
-
-            entry_px = float(c.loc[k_entry, "close"])
-            atr_e = float(c.loc[k_entry, "atr"])
-            sl = float(sweep_high + sl_atr_buffer * atr_e)
-            tp = float((c.loc[k_entry, "range_hi"] + c.loc[k_entry, "range_lo"]) / 2.0)
-
-            if not (tp < entry_px < sl):
-                i = k_entry + 1
-                continue
-
-            # risk sanity
-            risk = sl - entry_px
-            if risk <= 0:
-                i = k_entry + 1
-                continue
-
-            entries.append(Entry(
-                timestamp=pd.Timestamp(c.loc[k_entry, "timestamp"]),
-                model="RANGE_FADE",
-                side="SHORT",
-                entry=entry_px,
-                sl=sl,
-                tp=tp,
-                meta="range fade: top sweep -> reclaim -> retest -> mid",
-                ctx_sub_label="RANGE_TOP_SHORT",
-                regime=str(c.loc[k_entry, "regime"]),
-                trend_dir=str(c.loc[k_entry, "trend_dir"]),
-                trend_strength=float(c.loc[k_entry, "trend_strength"]),
-                atr_pct=float(c.loc[k_entry, "atr_pct"]),
-                phase=str(c.loc[k_entry, "phase"]),
-            ))
-
-            i = k_entry + int(max(1, cooldown_candles))
-            continue
-
-        i += 1
-
-    return entries
-
-
-
+    return out
 
 
 # ============================================================
@@ -829,6 +873,11 @@ def generate_range_entries(
 
 def generate_entries_from_ctx(
     ctx: pd.DataFrame,
+    # router / regime controller flags
+    enable_trend: bool = True,
+    enable_range_short: bool = True,
+    enable_range_long: bool = False,
+
     rr: float = 2.0,
     rr_long: float = 2.2,
     sl_atr_buffer: float = 0.25,
@@ -859,10 +908,86 @@ def generate_entries_from_ctx(
     reclaim_lookahead: int = 6,
     had_imp_down_window: int = 24,
     tts_retest_lookback: int = 24,
+    enable_tts_gate: bool = False,
+    debug_entry_filters: bool = False,
+    symbol: str = "",
     debug_long_funnel: bool = True,
 ) -> list["Entry"]:
 
     c = ctx.copy().sort_values("timestamp").reset_index(drop=True)
+
+    # ============================================================
+
+    # DEV1 — Adaptive RR Engine (SPRINT-2 Profit Acceleration)
+
+    # Dynamic RR selection based on phase + macro_strength.
+
+    # ============================================================
+
+    phase_last = None
+
+    try:
+
+        if isinstance(ctx, pd.DataFrame) and ("phase" in ctx.columns) and len(ctx) > 0:
+
+            phase_last = str(ctx["phase"].iloc[-1]).upper()
+
+    except Exception:
+
+        phase_last = None
+
+
+    macro_strength = None
+
+    try:
+
+        if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+
+            macro_strength = ctx.attrs.get("macro_strength")
+
+    except Exception:
+
+        macro_strength = None
+
+    if macro_strength is None:
+
+        try:
+
+            if isinstance(ctx, pd.DataFrame) and ("macro_strength" in ctx.columns) and len(ctx) > 0:
+
+                macro_strength = ctx["macro_strength"].iloc[-1]
+
+        except Exception:
+
+            macro_strength = None
+
+    macro_strength_u = str(macro_strength).upper() if macro_strength is not None else ""
+
+
+    is_trend = phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN")
+
+    is_range = phase_last == "PHASE_RANGE"
+
+
+    if is_trend and macro_strength_u == "HIGH":
+
+        rr = 2.5
+
+        rr_long = 2.5
+
+    elif is_trend:
+
+        rr = 2.0
+
+        rr_long = 2.0
+
+    elif is_range:
+
+        rr = 1.5
+
+        rr_long = 1.5
+
+        range_rr_long = 1.5  # kept for compatibility (range TP logic may ignore)
 
     # resolve per-mode params
     trend_rr = rr if trend_rr is None else float(trend_rr)
@@ -885,9 +1010,11 @@ def generate_entries_from_ctx(
     phase_u = _phase_upper(c)
 
     # TREND route
-    if phase_u.isin(["PHASE_TREND_UP", "PHASE_TREND_DOWN"]).any():
-        entries += generate_trend_entries(
+    if enable_trend and phase_u.isin(["PHASE_TREND_UP", "PHASE_TREND_DOWN"]).any():
+        entries += (generate_trend_entries(
             c,
+            debug_entry_filters=debug_entry_filters,
+            symbol=symbol,
             rr=trend_rr,
             rr_long=trend_rr_long,
             sl_atr_buffer=trend_sl_atr_buffer,
@@ -896,14 +1023,18 @@ def generate_entries_from_ctx(
             reclaim_buf_atr=reclaim_buf_atr,
             reclaim_lookahead=reclaim_lookahead,
             had_imp_down_window=had_imp_down_window,
-        )
+        ) or [])
 
     # RANGE route
     if (phase_u == "PHASE_RANGE").any():
-        entries += generate_range_entries(
+        entries += (generate_range_entries(
             c,
+            debug_entry_filters=debug_entry_filters,
+            symbol=symbol,
             rr_long=range_rr_long,
             sl_atr_buffer=range_sl_atr_buffer,
+            enable_range_short=enable_range_short,
+            enable_range_long=enable_range_long,
 
             dev_buf_atr=float(range_dev_buf_atr),
             reclaim_buf_atr=float(range_reclaim_buf_atr),
@@ -912,6 +1043,237 @@ def generate_entries_from_ctx(
             retest_lookahead=int(range_retest_lookahead),
             min_range_width_atr=float(range_min_width_atr),
             cooldown_candles=int(range_cooldown_candles),
-        )
+        ) or [])
+
+    # Telemetry: log chosen RR per produced entry
+
+    try:
+
+        log = logging.getLogger(__name__)
+
+        for e in entries:
+
+            model = str(getattr(e, "model", "") or "")
+
+            if model == "TDP_REENTRY":
+
+                rr_used = 2.5 if (is_trend and macro_strength_u == "HIGH") else (2.0 if is_trend else float(rr))
+
+            elif model.upper().startswith("RANGE"):
+
+                rr_used = 1.5 if is_range else float(rr)
+
+            else:
+
+                rr_used = float(rr)
+
+            log.debug("[RR_DYNAMIC] model=%s rr=%s", model, rr_used)
+
+    except Exception:
+
+        pass
+    # DEV1-1 HARD CLOSE: Throughput=0 diagnostics (top reasons)
+    # --------------------------------------------------------
+    if debug_entry_filters and (not entries):
+        try:
+            reasons: dict[str, int] = {}
+
+            def _bump(r: str) -> None:
+                reasons[r] = int(reasons.get(r, 0)) + 1
+
+            # Phase toggles
+            if phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN") and (not enable_trend):
+                _bump("TREND_DISABLED")
+            if phase_last == "PHASE_RANGE" and (not enable_range_short) and (not enable_range_long):
+                _bump("RANGE_DISABLED")
+
+            # Vol sanity (diag only)
+            atrp = None
+            try:
+                atrp = float(c["atr_pct"].iloc[-1]) if ("atr_pct" in c.columns and len(c) > 0) else None
+            except Exception:
+                atrp = None
+            if phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN") and (atrp is not None) and atrp < 0.004:
+                _bump("LOW_VOL_TREND")
+            if phase_last == "PHASE_RANGE" and (atrp is not None) and atrp > 0.012:
+                _bump("HIGH_VOL_RANGE")
+
+            # Label presence
+            labels: set[str] = set()
+            try:
+                if "ctx_sub_label" in c.columns:
+                    labels |= set(str(x) for x in c["ctx_sub_label"].dropna().tail(200).unique())
+                if "sub_label" in c.columns:
+                    labels |= set(str(x) for x in c["sub_label"].dropna().tail(200).unique())
+            except Exception:
+                labels = set()
+
+            has_tdp = any(str(x).upper().startswith("TDP_") for x in labels)
+            has_tts = any(str(x).upper().startswith("TTS_") for x in labels)
+
+            if phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN") and (not has_tdp):
+                _bump("NO_TDP_LABELS")
+            if enable_tts_gate and (not has_tts):
+                _bump("TTS_GATE_ON_NO_TTS_LABELS")
+
+            # Optional gate hint
+            if require_impulse_before_tdp:
+                _bump("IMPULSE_GATE_ON")
+
+            if not reasons:
+                _bump("NO_SETUPS_MATCHED")
+
+            top = sorted(reasons.items(), key=lambda kv: kv[1], reverse=True)[:3]
+            tag = f"[ENTRY_DIAG][{symbol}]" if symbol else "[ENTRY_DIAG]"
+            print(f"{tag} raw_entries=0 top_reasons={top} phase={phase_last} atr_pct={atrp}")
+        except Exception as _e:
+            tag = f"[ENTRY_DIAG][{symbol}]" if symbol else "[ENTRY_DIAG]"
+            print(f"{tag} raw_entries=0 diag_failed err={repr(_e)}")
+
+    
+    # --- DEBUG: force at least one synthetic entry so pipeline stages (cluster/invalidation/budget) can be exercised ---
+    # This ONLY activates when caller passes debug_entry_filters=True and no setups matched.
+    if debug_entry_filters and (len(entries) == 0):
+        try:
+            last = c.iloc[-1]
+            ts = pd.Timestamp(last["timestamp"])
+            close_px = float(last.get("close", last.get("c", np.nan)))
+            if not np.isfinite(close_px):
+                # fallback to mid of candle
+                close_px = 0.5 * (float(last["high"]) + float(last["low"]))
+            atr = float(last.get("atr", np.nan))
+            if not np.isfinite(atr) or atr <= 0:
+                atr = max(1e-9, close_px * 0.002)  # ~0.2% fallback
+            # create one SHORT and one LONG around last close; use conservative buffers
+            buf = 0.25
+            rr_dbg = float(rr) if rr is not None else 2.0
+
+            # SHORT synthetic
+            sl_s = float(last["high"]) + buf * atr
+            risk_s = max(1e-9, sl_s - close_px)
+            tp_s = close_px - rr_dbg * risk_s
+            entries.append(Entry(
+                timestamp=ts,
+                model="DEBUG_FORCED_SHORT",
+                side="SHORT",
+                entry=close_px,
+                sl=sl_s,
+                tp=tp_s,
+                meta="DEBUG: forced entry (no setups matched)",
+                ctx_sub_label="DEBUG",
+                regime=str(last.get("market_regime", last.get("regime", ""))) or None,
+                trend_dir=str(last.get("trend_dir", "")) or None,
+                trend_strength=float(last.get("trend_strength", np.nan)) if np.isfinite(float(last.get("trend_strength", np.nan))) else None,
+                atr_pct=float(last.get("atr_pct", np.nan)) if np.isfinite(float(last.get("atr_pct", np.nan))) else None,
+                phase=str(last.get("phase", phase_last)) if (("phase" in last) or (phase_last is not None)) else None,
+                score=0.5,
+            ))
+
+            # LONG synthetic
+            sl_l = float(last["low"]) - buf * atr
+            risk_l = max(1e-9, close_px - sl_l)
+            tp_l = close_px + rr_dbg * risk_l
+            entries.append(Entry(
+                timestamp=ts,
+                model="DEBUG_FORCED_LONG",
+                side="LONG",
+                entry=close_px,
+                sl=sl_l,
+                tp=tp_l,
+                meta="DEBUG: forced entry (no setups matched)",
+                ctx_sub_label="DEBUG",
+                regime=str(last.get("market_regime", last.get("regime", ""))) or None,
+                trend_dir=str(last.get("trend_dir", "")) or None,
+                trend_strength=float(last.get("trend_strength", np.nan)) if np.isfinite(float(last.get("trend_strength", np.nan))) else None,
+                atr_pct=float(last.get("atr_pct", np.nan)) if np.isfinite(float(last.get("atr_pct", np.nan))) else None,
+                phase=str(last.get("phase", phase_last)) if (("phase" in last) or (phase_last is not None)) else None,
+                score=0.5,
+            ))
+
+            tag = f"[DEBUG_ENTRY_FORCE][{symbol}]" if symbol else "[DEBUG_ENTRY_FORCE]"
+            print(f"{tag} forced_entries={len(entries)} ts={ts} close={close_px:.6f} atr={atr:.6f} phase={phase_last}")
+        except Exception as _e:
+            tag = f"[DEBUG_ENTRY_FORCE][{symbol}]" if symbol else "[DEBUG_ENTRY_FORCE]"
+            print(f"{tag} failed err={repr(_e)}")
+
+    entries = _apply_regime_drift_weights(entries, ctx)
 
     return entries
+# ============================================================
+# Minimal sanity test (no pytest needed)
+# ============================================================
+
+def sanity_test_range_top_short_v2() -> None:
+    """Run 2 minimal checks:
+      1) no reclaim => 0 entries
+      2) sweep+reclaim+retest => 1 entry (SHORT, model tag, labels, numeric SL/TP/RR sanity)
+    """
+    import pandas as pd
+    import numpy as np
+
+    base_cols = ["timestamp","open","high","low","close","atr","range_hi","range_lo","phase","regime","trend_dir","trend_strength","atr_pct"]
+    t0 = pd.Timestamp("2024-01-01 00:00:00")
+
+    # --- case 1: sweep but no reclaim ---
+    c1 = pd.DataFrame([
+        [t0 + pd.Timedelta(minutes=0), 100, 101.0, 99.0, 100.5, 1.0, 100.0, 80.0, "PHASE_RANGE", "", "", 0.0, 0.0],
+        [t0 + pd.Timedelta(minutes=1), 100, 100.2, 99.5, 100.1, 1.0, 100.0, 80.0, "PHASE_RANGE", "", "", 0.0, 0.0],
+        [t0 + pd.Timedelta(minutes=2), 100, 100.1, 99.7, 100.0, 1.0, 100.0, 80.0, "PHASE_RANGE", "", "", 0.0, 0.0],
+    ], columns=base_cols)
+
+    e1 = generate_range_entries(
+        c1,
+        rr_long=1.6,
+        sl_atr_buffer=0.25,
+        enable_range_short=True,
+        enable_range_long=True,   # must be ignored
+        dev_buf_atr=0.08,
+        reclaim_buf_atr=0.00,
+        retest_tol_atr=0.15,
+        reclaim_lookahead=24,
+        retest_lookahead=36,
+        min_range_width_atr=4.0,
+        cooldown_candles=1,
+    )
+    assert len(e1) == 0, f"expected 0 entries (no reclaim), got {len(e1)}"
+
+    # --- case 2: sweep + reclaim + retest => 1 entry ---
+    c2 = pd.DataFrame([
+        [t0 + pd.Timedelta(minutes=0), 100, 101.0, 99.0, 100.5, 1.0, 100.0, 80.0, "PHASE_RANGE", "", "", 0.0, 0.0],  # sweep
+        [t0 + pd.Timedelta(minutes=1), 100, 100.4, 99.2,  99.6, 1.0, 100.0, 80.0, "PHASE_RANGE", "", "", 0.0, 0.0],  # reclaim (close < 100)
+        [t0 + pd.Timedelta(minutes=2),  99.6, 100.0, 99.0, 99.5, 1.0, 100.0, 80.0, "PHASE_RANGE", "", "", 0.0, 0.0],  # retest touch + close < 100 + close > mid
+    ], columns=base_cols)
+
+    e2 = generate_range_entries(
+        c2,
+        rr_long=1.6,
+        sl_atr_buffer=0.25,
+        enable_range_short=True,
+        enable_range_long=True,   # must be ignored
+        dev_buf_atr=0.08,
+        reclaim_buf_atr=0.00,
+        retest_tol_atr=0.15,
+        reclaim_lookahead=24,
+        retest_lookahead=36,
+        min_range_width_atr=4.0,
+        cooldown_candles=1,
+    )
+    assert len(e2) == 1, f"expected 1 entry, got {len(e2)}"
+
+    e = e2[0]
+    assert e.model == "RANGE_TOP_SHORT_V2", f"model mismatch: {e.model}"
+    assert e.ctx_sub_label == "RANGE_TOP_SHORT", f"ctx_sub_label mismatch: {e.ctx_sub_label}"
+    assert str(e.side).upper() == "SHORT", f"side mismatch: {e.side}"
+    assert np.isfinite(float(e.entry)) and np.isfinite(float(e.sl)) and np.isfinite(float(e.tp))
+    assert e.tp < e.entry < e.sl, f"price ordering invalid: tp={e.tp} entry={e.entry} sl={e.sl}"
+
+    # RR sanity
+    rr = abs(e.tp - e.entry) / max(1e-9, abs(e.entry - e.sl))
+    assert rr > 0.0, "RR must be positive"
+
+    print("[OK] sanity_test_range_top_short_v2 passed")
+
+
+if __name__ == "__main__":
+    # Allow quick local run: python backtest/engine/entry_model.py
+    sanity_test_range_top_short_v2()

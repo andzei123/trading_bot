@@ -1,0 +1,6 @@
+symbol,month,train_months,train_trades,train_total_R,decision_profile,decision_reason,test_trades,test_total_R
+BTCUSDT,2025-12,,0,0.0,NORMAL,window_label 2025-01..2026-01 total_R=4.00 >= 0.00,6,9.0
+BTCUSDT,2026-01,2025-12,6,9.0,NORMAL,window_label 2025-01..2026-01 total_R=4.00 >= 0.00,65,-5.0
+ETHUSDT,2025-12,,0,0.0,NORMAL,window_label 2025-01..2026-01 total_R=24.04 >= 0.00,7,14.0
+ETHUSDT,2026-01,2025-12,7,14.0,NORMAL,window_label 2025-01..2026-01 total_R=24.04 >= 0.00,48,10.039701778468782
+XRPUSDT,2026-01,,0,0.0,NORMAL,window_label 2025-01..2026-01 total_R=25.00 >= 0.00,74,25.0

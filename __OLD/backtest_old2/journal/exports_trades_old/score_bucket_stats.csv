@@ -1,0 +1,2 @@
+score_bucket,count,wins,losses,winrate,expectancy,sumR,profit_factor,max_dd_R
+>=0.70,1734,137,1597,7.900807381776239,-0.6839677047289504,-1186.0,0.2573575453976205,-1187.0

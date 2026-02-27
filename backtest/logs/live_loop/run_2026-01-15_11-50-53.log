@@ -1,0 +1,52 @@
+[2026-01-15T11:50:53.065603+00:00] CMD: python -m backtest.journal.live_signal_runner_auto --leaderboard_csv backtest/journal/exports_reports/summary_by_symbol.csv --metric total_R --top_n 5 --monthly_risk_csv backtest/journal/exports_reports/monthly_risk_by_symbol.csv --bad_month_r -10 --bad_month_min_trades 20 --monthly_action neutral --trades_csv backtest/journal/exports_trades/trades_simulated.csv --maxdd_threshold -25 --killswitch_r -10 --killswitch_window_days 7 -- --once --source bybit --bybit_category linear --bybit_interval 30 --bybit_candles 1500 --regime_perf_csv backtest/journal/exports_trades/trades_simulated.csv --regime_window_months 12 --regime_min_trades 10 --regime_per_symbol --emit_last_candles 1 --debug_regime
+
+[BOOT] symbols=['XRPUSDT'] interval=30 source=bybit
+[2026-01-15 11:50:55] [RISK_GUARD] loaded 3 symbol statuses for month= from backtest/journal/exports_reports/monthly_risk_by_symbol.csv
+[2026-01-15 11:50:55] [REGIME:XRPUSDT] NORMAL | window_label 2025-01..2026-01 total_R=25.00 >= 0.00
+
+[TTS DEBUG]
+total candles: 1000
+impulse_ok : 798
+range_ok   : 435
+dev_ok     : 367
+tts_core   : 161
+breakout_up: 26
+breakout_dn: 6
+trend_up_ok: 632
+trend_dn_ok: 360
+TTS_UP: 4
+TTS_DN: 1
+impulse_atr q: {0.5: 4.483029909870105, 0.7: 6.678877934037363, 0.8: 8.586522116985073, 0.9: 10.102369528279016}
+range_width_atr q: {0.5: 10.251012145749046, 0.7: 12.390995260663468, 0.8: 13.355666875391398, 0.9: 14.840989399293383}
+breakout_up_atr q: {0.5: -4.062600762047731, 0.7: -2.3018487098952316, 0.8: -1.5791255176807735, 0.9: -0.7642118904262525}
+[2026-01-15 11:50:56] [DEBUG] raw entries=74 models=['TDP_REENTRY']
+[2026-01-15 11:50:56] [DEBUG] emit_last_candles=1 cutoff=2026-01-15 11:00:00+00:00 kept=0
+[2026-01-15 11:50:56] [DEBUG] emit_last_candles removed all -> skip portfolio
+[BOOT] symbols=['ETHUSDT'] interval=30 source=bybit
+[2026-01-15 11:50:57] [RISK_GUARD] loaded 3 symbol statuses for month= from backtest/journal/exports_reports/monthly_risk_by_symbol.csv
+[2026-01-15 11:50:57] [REGIME:ETHUSDT] NORMAL | window_label 2025-01..2026-01 total_R=23.82 >= 0.00
+
+[TTS DEBUG]
+total candles: 1000
+impulse_ok : 790
+range_ok   : 523
+dev_ok     : 388
+tts_core   : 173
+breakout_up: 13
+breakout_dn: 3
+trend_up_ok: 776
+trend_dn_ok: 216
+TTS_UP: 4
+TTS_DN: 0
+impulse_atr q: {0.5: 3.484124197771875, 0.7: 5.2690972660357716, 0.8: 6.897183777235797, 0.9: 9.239864759232741}
+range_width_atr q: {0.5: 9.15997014007818, 0.7: 11.342490941539161, 0.8: 13.733080808080798, 0.9: 17.200321586493246}
+breakout_up_atr q: {0.5: -3.7539224919151297, 0.7: -2.5125325685330213, 0.8: -1.879171894212931, 0.9: -1.0398462753527344}
+[2026-01-15 11:50:58] [DEBUG] raw entries=55 models=['TDP_REENTRY']
+[2026-01-15 11:50:58] [DEBUG] emit_last_candles=1 cutoff=2026-01-15 11:00:00+00:00 kept=0
+[2026-01-15 11:50:58] [DEBUG] emit_last_candles removed all -> skip portfolio
+[AUTO] leaderboard top symbols: XRPUSDT, ETHUSDT, BTCUSDT
+[AUTO] XRPUSDT: ALLOW | monthly_guard: monthly_guard: ok; maxdd_guard: maxdd_guard: maxDD=-6.00 ok; killswitch: killswitch: rolling 7d R=25.00 > -10.00
+[AUTO] ETHUSDT: ALLOW | monthly_guard: monthly_guard: ok; maxdd_guard: maxdd_guard: maxDD=-12.00 ok; killswitch: killswitch: rolling 7d R=13.82 > -10.00
+[AUTO] BTCUSDT: DENY | monthly_guard: monthly_guard: ok; maxdd_guard: maxdd_guard: maxDD=-19.00 ok; killswitch: killswitch: rolling 7d R=-11.00 <= -10.00
+[AUTO] exec(XRPUSDT): 'C:\\Users\\37065\\PycharmProjects\\PythonProject\\.venv\\Scripts\\python.exe' '-m' 'backtest.journal.live_signal_runner' '--symbols' 'XRPUSDT' '--risk_guard_csv' 'backtest/journal/exports_reports/monthly_risk_by_symbol.csv' '--risk_guard_bad_month_r' '-10.0' '--risk_guard_min_trades' '20' '--risk_guard_action' 'defensive' '--once' '--source' 'bybit' '--bybit_category' 'linear' '--bybit_interval' '30' '--bybit_candles' '1500' '--regime_perf_csv' 'backtest/journal/exports_trades/trades_simulated.csv' '--regime_window_months' '12' '--regime_min_trades' '10' '--regime_per_symbol' '--emit_last_candles' '1' '--debug_regime'
+[AUTO] exec(ETHUSDT): 'C:\\Users\\37065\\PycharmProjects\\PythonProject\\.venv\\Scripts\\python.exe' '-m' 'backtest.journal.live_signal_runner' '--symbols' 'ETHUSDT' '--risk_guard_csv' 'backtest/journal/exports_reports/monthly_risk_by_symbol.csv' '--risk_guard_bad_month_r' '-10.0' '--risk_guard_min_trades' '20' '--risk_guard_action' 'defensive' '--once' '--source' 'bybit' '--bybit_category' 'linear' '--bybit_interval' '30' '--bybit_candles' '1500' '--regime_perf_csv' 'backtest/journal/exports_trades/trades_simulated.csv' '--regime_window_months' '12' '--regime_min_trades' '10' '--regime_per_symbol' '--emit_last_candles' '1' '--debug_regime'

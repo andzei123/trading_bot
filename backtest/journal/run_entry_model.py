@@ -17,7 +17,8 @@ import pandas as pd
 import numpy as np
 
 import filter_trades as ft
-import entry_model as em
+from backtest.engine import entry_model as em
+
 
 
 # ===== defaults =====
@@ -101,7 +102,7 @@ def main():
         type=str,
         default="combined",
         choices=["combined", "long_only", "short_only", "range_only"],
-        help="combined=all entries, long_only=only LONG, short_only=only SHORT, range_only=only PHASE_RANGE entries (MVP).",
+        help="combined=all entries, long_only=only LONG, short_only=only SHORT, range_only=only RANGE_TOP_SHORT_V2 (MVP lock).",
     )
 
     # split-test params
@@ -114,8 +115,9 @@ def main():
     parser.add_argument("--trend_sl_atr", type=float, default=None)
 
     # --- Range params (v2) ---
-    parser.add_argument("--range_sl_atr", type=float, default=1.5)
+    parser.add_argument("--range_sl_atr", type=float, default=0.25)
     parser.add_argument("--range_dev_buf_atr", type=float, default=0.08)
+    parser.add_argument("--range_reclaim_buf_atr", type=float, default=0.00)
     parser.add_argument("--range_retest_tol_atr", type=float, default=0.15)
     parser.add_argument("--range_reclaim_lookahead", type=int, default=24)
     parser.add_argument("--range_retest_lookahead", type=int, default=36)
@@ -142,8 +144,20 @@ def main():
 
     ctx = ft.build_ctx(candles)
 
+    # ================================
+    # MODE LOCKS (MVP)
+    # range_only -> no trend entries
+    # ================================
+    enable_trend = (args.mode != "range_only")
+
     entries = em.generate_entries_from_ctx(
         ctx,
+
+        # mode locks
+        enable_trend=enable_trend,
+        enable_range_short=True,
+        enable_range_long=False,
+
         rr=RR,
         rr_long=RR_LONG,
         sl_atr_buffer=SL_ATR_BUFFER,
@@ -154,6 +168,7 @@ def main():
 
         range_sl_atr_buffer=float(args.range_sl_atr),
         range_dev_buf_atr=float(args.range_dev_buf_atr),
+        range_reclaim_buf_atr=float(args.range_reclaim_buf_atr),
         range_retest_tol_atr=float(args.range_retest_tol_atr),
         range_reclaim_lookahead=int(args.range_reclaim_lookahead),
         range_retest_lookahead=int(args.range_retest_lookahead),
@@ -171,48 +186,40 @@ def main():
         debug_long_funnel=True,
     )
 
-    # ============================================================
-    # ✅ STEP 6.3 Profile routing (optional, outside entry_model)
-    # ============================================================
+    # normalize entries -> df -> back to Entry (keeps export fields stable)
     if entries:
         df_e = pd.DataFrame([e.__dict__ for e in entries])
-
-        # normalize
         df_e["side"] = df_e["side"].astype(str).str.upper()
         if "phase" in df_e.columns:
             df_e["phase"] = df_e["phase"].astype(str).str.upper()
         else:
             df_e["phase"] = ""
-
-        # Profile filters (optional)
-        if args.mode != "combined":
-            if ENABLE_LONG_TREND_UP and (not ENABLE_SHORT_TREND_DOWN):
-                df_e = df_e[(df_e["side"] == "LONG") & (df_e["phase"] == "PHASE_TREND_UP")].copy()
-            else:
-                keep_long = ENABLE_LONG_TREND_UP
-                keep_short = ENABLE_SHORT_TREND_DOWN
-
-                mask = pd.Series(False, index=df_e.index)
-                if keep_long:
-                    mask |= (df_e["side"] == "LONG") & (df_e["phase"] == "PHASE_TREND_UP")
-                if keep_short:
-                    mask |= (df_e["side"] == "SHORT") & (df_e["phase"] == "PHASE_TREND_DOWN")
-
-                df_e = df_e[mask].copy()
-
-                if keep_short and ("trend_strength" in df_e.columns):
-                    ts = pd.to_numeric(df_e["trend_strength"], errors="coerce").fillna(0.0)
-                    df_e = df_e[~((df_e["side"] == "SHORT") & (ts < float(SHORT_TREND_STRENGTH_MIN)))].copy()
-
         entries = [em.Entry(**row) for row in df_e.to_dict("records")]
 
-    # mode filter (MVP)
+    entries_all = list(entries)  # for hard locks in range_only
+
+    # mode filter
     if args.mode == "long_only":
         entries = [e for e in entries if str(getattr(e, "side", "")).upper() == "LONG"]
     elif args.mode == "short_only":
         entries = [e for e in entries if str(getattr(e, "side", "")).upper() == "SHORT"]
     elif args.mode == "range_only":
-        entries = [e for e in entries if str(getattr(e, "phase", "")).upper() == "PHASE_RANGE"]
+        def _is_range_v2(e: em.Entry) -> bool:
+            return (
+                str(getattr(e, "model", "")) == "RANGE_TOP_SHORT_V2"
+                and str(getattr(e, "ctx_sub_label", "")) == "RANGE_TOP_SHORT"
+                and str(getattr(e, "side", "")).upper() == "SHORT"
+                and str(getattr(e, "phase", "")).upper() == "PHASE_RANGE"
+            )
+
+        bad = [e for e in entries_all if not _is_range_v2(e)]
+        if bad:
+            bad_models = sorted({str(getattr(e, "model", "")) for e in bad})
+            raise AssertionError(
+                f"range_only lock violated: found non-RANGE_TOP_SHORT_V2 entries: {bad_models} (n={len(bad)})"
+            )
+
+        entries = [e for e in entries_all if _is_range_v2(e)]
 
     entries_df = pd.DataFrame([e.__dict__ for e in entries])
     entries_path = ft.EXPORT_DIR / "entries_generated.csv"
@@ -226,6 +233,19 @@ def main():
         partial_at_r=PARTIAL_AT_R,
         partial_frac=PARTIAL_FRAC,
     )
+
+    # hard lock: range_only must output only RANGE_TOP_SHORT_V2 trades
+    if args.mode == "range_only" and not sim.empty:
+        if (sim.get("model") != "RANGE_TOP_SHORT_V2").any():
+            bad = sorted(sim.loc[sim["model"] != "RANGE_TOP_SHORT_V2", "model"].unique().tolist())
+            raise AssertionError(f"range_only lock violated in trades: bad model(s)={bad}")
+        if "ctx_sub_label" in sim.columns and (sim["ctx_sub_label"] != "RANGE_TOP_SHORT").any():
+            bad = sorted(sim.loc[sim["ctx_sub_label"] != "RANGE_TOP_SHORT", "ctx_sub_label"].unique().tolist())
+            raise AssertionError(f"range_only lock violated in trades: bad ctx_sub_label(s)={bad}")
+        if "side" in sim.columns and (sim["side"].astype(str).str.upper() != "SHORT").any():
+            raise AssertionError("range_only lock violated in trades: found non-SHORT")
+        if "phase" in sim.columns and (sim["phase"].astype(str).str.upper() != "PHASE_RANGE").any():
+            raise AssertionError("range_only lock violated in trades: found non-PHASE_RANGE")
 
     sim_path = ft.EXPORT_DIR / "trades_simulated.csv"
     sim.to_csv(sim_path, index=False)
