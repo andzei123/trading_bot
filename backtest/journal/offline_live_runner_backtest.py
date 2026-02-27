@@ -187,10 +187,28 @@ def main(argv: List[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Offline bar-by-bar backtest that reuses the live decision pipeline (1:1)."
     )
-    ap.add_argument("--symbols", required=True, help="Comma-separated symbols, e.g. BTCUSDT,ETHUSDT")
-    ap.add_argument("--from", dest="dt_from", required=True, help="Start date/time (UTC), e.g. 2025-01-01")
-    ap.add_argument("--to", dest="dt_to", required=True, help="End date/time (UTC), e.g. 2025-03-01")
-    ap.add_argument("--candles_dir", required=True, help="Directory with per-symbol candle CSVs")
+
+    ap.add_argument(
+        "--symbols",
+        required=False,
+        default="BTCUSDT",
+        help="Comma-separated symbols, e.g. BTCUSDT,ETHUSDT (default: BTCUSDT)",
+    )
+
+    # --- Gate compatibility: support both --from/--to and --start/--end ---
+    ap.add_argument("--from", dest="dt_from", required=False, help="Start date/time (UTC), e.g. 2025-01-01")
+    ap.add_argument("--start", dest="dt_from", required=False, help="Alias for --from (UTC), e.g. 2025-01-01")
+
+    ap.add_argument("--to", dest="dt_to", required=False, help="End date/time (UTC), e.g. 2025-03-01")
+    ap.add_argument("--end", dest="dt_to", required=False, help="Alias for --to (UTC), e.g. 2025-01-02")
+
+    ap.add_argument(
+        "--candles_dir",
+        required=False,
+        default="backtest/data",
+        help="Directory with per-symbol candle CSVs (default: backtest/data)",
+    )
+
     ap.add_argument("--macro_root", default="data/macro", help="Macro root (reserved; fail-open)")
     ap.add_argument(
         "--portfolio_state",
@@ -212,6 +230,10 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--debug", action="store_true", help="Verbose pipeline logs")
     args = ap.parse_args(argv)
 
+    # Enforce date range presence (but via either alias)
+    if not args.dt_from or not args.dt_to:
+        ap.error("Missing date range: provide --from/--to or --start/--end")
+
     symbols = [s.strip().upper() for s in str(args.symbols).split(",") if s.strip()]
     if not symbols:
         raise SystemExit("--symbols empty")
@@ -219,7 +241,7 @@ def main(argv: List[str] | None = None) -> int:
     dt_from = _parse_dt(args.dt_from)
     dt_to = _parse_dt(args.dt_to)
     if dt_to <= dt_from:
-        raise SystemExit("--to must be > --from")
+        raise SystemExit("--to/--end must be > --from/--start")
 
     candles_dir = Path(args.candles_dir)
     out_trades = Path(args.out_trades)
@@ -227,10 +249,8 @@ def main(argv: List[str] | None = None) -> int:
 
     _ensure_trades_header(out_trades)
 
-    # Load all candles upfront (simple, reliable for phase-1)
     candles_by_symbol: Dict[str, pd.DataFrame] = {s: _load_symbol_candles(candles_dir, s) for s in symbols}
 
-    # Restrict timeline to intersection of available candles across symbols
     timelines = []
     for s, df in candles_by_symbol.items():
         sub = df[(df["timestamp"] >= dt_from) & (df["timestamp"] <= dt_to)].copy()
@@ -241,13 +261,11 @@ def main(argv: List[str] | None = None) -> int:
         print("[OFFLINE] no candles in requested range")
         return 0
 
-    # Use union of timestamps across symbols.
     all_ts = pd.Index(sorted(set().union(*[set(t.tolist()) for t in timelines if not t.empty])))
 
     trade_idx = 0
 
     for ts in all_ts:
-        # portfolio exposure snapshot is read-only
         portfolio_state = load_portfolio_exposure(pf_path)
 
         for sym in symbols:
@@ -255,17 +273,23 @@ def main(argv: List[str] | None = None) -> int:
             if df_full.empty:
                 continue
 
-            # build window up to current ts
             df_up_to = df_full[df_full["timestamp"] <= ts]
             if df_up_to.empty:
                 continue
             window = df_up_to.tail(int(args.window)).copy().reset_index(drop=True)
 
+            # Compat ctx keys: pipeline variants may check different flags
+            force_flag = bool(args.debug_force_entries)
             ctx = {
                 "latest_ts": ts,
                 "bybit_interval": int(args.bybit_interval),
                 "macro_bias": "NEUTRAL",
-                "debug_force_entries": bool(args.debug_force_entries),
+                "debug": bool(args.debug),
+
+                "debug_force_entries": force_flag,
+                "force_entries": force_flag,
+                "debug_entry_force": force_flag,
+                "DEBUG_FORCE_ENTRIES": force_flag,
             }
 
             df_e = run_pipeline_once(
@@ -279,7 +303,6 @@ def main(argv: List[str] | None = None) -> int:
             if df_e is None or df_e.empty:
                 continue
 
-            # Execute each entry independently (phase-1).
             sim = ExecutionSimulator(df_full)
 
             for _, r in df_e.iterrows():
@@ -292,16 +315,13 @@ def main(argv: List[str] | None = None) -> int:
                 if pd.isna(setup_ts):
                     continue
 
-                # find entry index in full df
                 try:
                     entry_idx = int(df_full.index[df_full["timestamp"] == setup_ts][0])
                 except Exception:
-                    # nearest prior
                     entry_idx = int(df_full[df_full["timestamp"] <= setup_ts].index.max())
 
                 res = sim.simulate(entry_idx=entry_idx, side=side, entry=entry, sl=sl, tp=tp)
 
-                # --- FIX: always write a string exit_timestamp (otherwise CSV columns shift -> symbol becomes NaN) ---
                 exit_ts_str = ""
                 try:
                     if res is not None and res.exit_idx is not None:
@@ -339,7 +359,6 @@ def main(argv: List[str] | None = None) -> int:
                 )
                 trade_idx += 1
 
-    # Update analytics outputs
     try:
         update_equity_curve_from_trades(
             trades_csv=str(out_trades),
