@@ -2840,10 +2840,14 @@ def main():
 
     # === LIQUIDATION CONTEXT (Bybit public WS, context-only) ===
     try:
-        start_liquidation_stream(symbols)
-        print(f"[{now_utc_str()}] [LIQ] WS started for {len(symbols)} symbols")
+        ok = start_liquidation_stream(symbols)
+        if ok:
+            print(f"[{now_utc_str()}] [LIQ] WS started for {len(symbols)} symbols")
+        else:
+            print(f"[{now_utc_str()}] [LIQ] WS disabled")
     except Exception as e:
         print(f"[{now_utc_str()}] [LIQ] WS start failed (ignored): {e}")
+
 
     # Ensure state file exists even if no signals are emitted
     if args.state:

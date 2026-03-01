@@ -73,14 +73,15 @@ class LiquidationCache:
     bucket_seconds: int = 15 * 60
     max_age_seconds: int = 7 * 24 * 60 * 60
     _by_symbol: Dict[str, Dict[int, _Agg]] = field(default_factory=dict)
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Thread lock: cache is accessed from async WS tasks and sync callers.
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    async def add_event(self, symbol: str, ts_ms: int, side: str, v: float, p: float) -> None:
+    def add_event(self, symbol: str, ts_ms: int, side: str, v: float, p: float) -> None:
         ts_ms = _normalize_ts_to_ms(int(ts_ms))
         b = _bucket_start_ms(ts_ms, self.bucket_seconds)
         side_bias = _liq_side_to_position_bias(side)
 
-        async with self._lock:
+        with self._lock:
             sym_map = self._by_symbol.setdefault(symbol, {})
             agg = sym_map.get(b)
             if agg is None:
@@ -97,14 +98,14 @@ class LiquidationCache:
         for k in [k for k in list(sym_map.keys()) if k < cutoff_ms]:
             sym_map.pop(k, None)
 
-    async def get_context(self, symbol: str, since_ms: int, until_ms: int) -> dict:
+    def get_context(self, symbol: str, since_ms: int, until_ms: int) -> dict:
         start_b = _bucket_start_ms(since_ms, self.bucket_seconds)
         end_b = _bucket_start_ms(until_ms, self.bucket_seconds)
 
         out = _Agg()
         step = self.bucket_seconds * 1000
 
-        async with self._lock:
+        with self._lock:
             sym_map = self._by_symbol.get(symbol, {})
             b = start_b
             while b <= end_b:
@@ -156,7 +157,11 @@ class BybitLiquidationWS:
         self._stop = asyncio.Event()
 
     async def run_forever(self) -> None:
-        import websockets  # type: ignore
+        try:
+            import websockets  # type: ignore
+        except ModuleNotFoundError:
+            # Dependency missing. Fail-open: exit the WS task quietly.
+            return
 
         backoff = self.reconnect_backoff_s[0]
         backoff_max = self.reconnect_backoff_s[1]
@@ -183,7 +188,8 @@ class BybitLiquidationWS:
                                 p = float(e.get("p") or 0.0)
                                 if not symbol or ts_ms <= 0 or v <= 0 or p <= 0:
                                     continue
-                                await self.cache.add_event(symbol=symbol, ts_ms=ts_ms, side=side, v=v, p=p)
+                                # Cache is synchronous (thread-safe via Lock)
+                                self.cache.add_event(symbol=symbol, ts_ms=ts_ms, side=side, v=v, p=p)
                             except Exception:
                                 continue
             except Exception:
@@ -224,21 +230,52 @@ def _thread_main(symbols: list[str]) -> None:
     loop.run_until_complete(_runner())
 
 
-def start_liquidation_stream(symbols: Iterable[str]) -> None:
+def start_liquidation_stream(symbols: Iterable[str]) -> bool:
+    """Start Bybit liquidation WS background thread (best-effort).
+
+    Returns:
+        True  - WS thread is already running, or started successfully
+        False - WS cannot start (e.g., websockets missing) or init failed
+    """
     global _BG_THREAD
+
+    # If already running, keep it.
     if _BG_THREAD and _BG_THREAD.is_alive():
-        return
+        return True
 
     syms = [str(s).strip().upper() for s in symbols if str(s).strip()]
     if not syms:
-        return
+        return False
+
+    # Preflight dependency check to avoid thread crashes.
+    try:
+        import importlib.util as _importlib_util
+        if _importlib_util.find_spec("websockets") is None:
+            return False
+    except Exception:
+        # Fail-open: if the checker itself fails, don't block the runner.
+        return False
 
     _BG_READY.clear()
-    t = threading.Thread(target=_thread_main, args=(syms,), name="bybit_liquidation_ws_bg", daemon=True)
+    t = threading.Thread(
+        target=_thread_main,
+        args=(syms,),
+        name="bybit_liquidation_ws_bg",
+        daemon=True,
+    )
     _BG_THREAD = t
     t.start()
+
+    # Wait briefly for init.
     _BG_READY.wait(timeout=5.0)
 
+    # Confirm init succeeded (loop/client exist and thread still alive).
+    if not t.is_alive():
+        return False
+    if _BG_LOOP is None or _BG_CLIENT is None:
+        return False
+
+    return True
 
 async def get_liquidation_context(symbol: str, since_ts: int, until_ts: int) -> dict:
     global _WS_START_MS
@@ -248,7 +285,8 @@ async def get_liquidation_context(symbol: str, since_ts: int, until_ts: int) -> 
         since_ms, until_ms = until_ms, since_ms
     if _WS_START_MS and since_ms < _WS_START_MS:
         since_ms = _WS_START_MS
-    return await _CACHE.get_context(symbol=str(symbol).strip().upper(), since_ms=since_ms, until_ms=until_ms)
+    # Cache is synchronous; keep async wrapper for compatibility.
+    return _CACHE.get_context(symbol=str(symbol).strip().upper(), since_ms=since_ms, until_ms=until_ms)
 
 
 def get_liquidation_context_sync(symbol: str, since_ts: int, until_ts: int, timeout_s: float = 2.0) -> dict:
@@ -276,12 +314,8 @@ def get_liquidation_context_sync(symbol: str, since_ts: int, until_ts: int, time
             "liq_long_volume_quote": 0.0,
             "liq_side_bias": "NEUTRAL",
         }
-
-    fut = asyncio.run_coroutine_threadsafe(
-        _CACHE.get_context(symbol=symbol, since_ms=since_ms, until_ms=until_ms),
-        _BG_LOOP,
-    )
-    return fut.result(timeout=timeout_s)
+    # Cache read is synchronous; avoid coroutine APIs here.
+    return _CACHE.get_context(symbol=symbol, since_ms=since_ms, until_ms=until_ms)
 
 
 def _simplify_ctx(ctx: dict) -> dict:
@@ -303,4 +337,3 @@ def get_liquidation_features_sync(symbol: str, since_ts: int, until_ts: int, tim
     """Sync version of get_liquidation_features."""
     ctx = get_liquidation_context_sync(symbol, since_ts, until_ts, timeout_s=timeout_s)
     return _simplify_ctx(ctx)
-

@@ -8,7 +8,16 @@ __pycache__/
 *.pyo
 
 # Runtime exports
-backtest/journal/exports_live/
+backtest/journal/exports_live/*
+!backtest/journal/exports_live/.gitkeep
 backtest/journal/live_status.json
 backtest/journal/live_controls.json
 backtest/journal/trades.csv
+@"
+# runtime / artifacts
+__pycache__/
+*.pyc
+
+backtest/journal/exports_live/*
+!backtest/journal/exports_live/.gitkeep
+"@ | Out-File -Encoding ascii -Append .gitignore
