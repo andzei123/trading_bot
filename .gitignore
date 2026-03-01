@@ -1,0 +1,14 @@
+# PyCharm / JetBrains
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime exports
+backtest/journal/exports_live/
+backtest/journal/live_status.json
+backtest/journal/live_controls.json
+backtest/journal/trades.csv
