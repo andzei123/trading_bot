@@ -430,6 +430,85 @@ def _append_csv(path: Path, df: pd.DataFrame) -> None:
     df.to_csv(path, mode="a", index=False, header=False)
 
 
+def _print_symbol_perf_contract(trades_csv: str) -> None:
+    """
+    Phase2 SYMBOL_PERF contract log.
+    Always prints, fail-open.
+
+    Contract:
+      [SYMBOL_PERF] sharpe=... winrate=... n=... window=... status=OK|DISABLED reason=...
+    """
+    try:
+        from pathlib import Path
+        import pandas as pd
+        import numpy as np
+        import math
+
+        if not trades_csv or not Path(trades_csv).exists():
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_TRADES_FILE")
+            return
+
+        df = pd.read_csv(trades_csv, engine="python", on_bad_lines="skip")
+
+        if df is None or df.empty:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_TRADES")
+            return
+
+        # ---- derive R (prefer direct R cols; fallback to outcome+rr) ----
+        r = None
+        for col in ("R", "r", "realized_r", "realized_R", "pnl_r"):
+            if col in df.columns:
+                r = pd.to_numeric(df[col], errors="coerce")
+                break
+
+        if r is None and "outcome" in df.columns:
+            out = df["outcome"].astype(str).str.upper().fillna("")
+            rr = pd.to_numeric(df["rr"], errors="coerce") if "rr" in df.columns else pd.Series(1.0, index=df.index)
+
+            r = pd.Series(np.nan, index=df.index, dtype=float)
+            win = out.isin(["WIN", "TP", "TP_HIT"])
+            loss = out.isin(["LOSS", "SL", "SL_HIT"])
+            be = out.isin(["BE", "BREAKEVEN"])
+
+            r.loc[win] = rr.loc[win].astype(float)
+            r.loc[loss] = -1.0
+            r.loc[be] = 0.0
+
+        if r is None:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_R_FIELDS")
+            return
+
+        r = pd.to_numeric(r, errors="coerce").dropna()
+        n_total = int(len(r))
+        if n_total <= 0:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_VALID_R")
+            return
+
+        # institutional rolling window: 120 if available else 60 else n
+        window = 120 if n_total >= 120 else (60 if n_total >= 60 else n_total)
+        rrw = r.tail(window).astype(float).to_numpy()
+        n_win = int(len(rrw))
+
+        if n_win <= 0:
+            print(f"[SYMBOL_PERF] sharpe=None winrate=None n={n_total} window={window} status=DISABLED reason=EMPTY_WINDOW")
+            return
+
+        avg = float(rrw.mean()) if n_win else 0.0
+        std = float(rrw.std(ddof=0)) if n_win else 0.0
+        sharpe = float((avg / std) * math.sqrt(n_win)) if (n_win > 1 and std > 1e-12) else 0.0
+        winrate = float((rrw > 0).mean()) if n_win else 0.0
+
+        print(
+            f"[SYMBOL_PERF] sharpe={sharpe:.2f} winrate={winrate:.2f} "
+            f"n={n_total} window={window} status=OK reason=COMPUTED"
+        )
+
+    except Exception as e:
+        print(
+            "[SYMBOL_PERF] sharpe=None winrate=None "
+            f"n=0 window=60 status=DISABLED reason={type(e).__name__}"
+        )
+
 # Stable schema for live entries output.
 # Even if a run produces 0 rows, we still write an empty CSV with this header
 # so downstream tooling can always read the file.
@@ -2845,7 +2924,18 @@ def main():
 
     print(f"[BOOT] symbols={symbols} interval={args.bybit_interval} source={args.source}")
 
-
+    # --- [SYMBOL_PERF] contract tag (must appear every run, fail-open) ---
+    try:
+        # IMPORTANT: čia turi būti TRADES failas, ne regime/perf CSV.
+        # Jei turi args.trades_csv ar panašų — naudok jį. Jei ne, palik default.
+        trades_csv = getattr(args, "trades_csv", None) or "backtest/journal/trades.csv"
+        _print_symbol_perf_contract(trades_csv)
+    except Exception:
+        # never block runner on telemetry
+        try:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=0 status=DISABLED reason=EXC")
+        except Exception:
+            pass
 
     # --- [PYRAMID] contract tag (must appear every run) ---
     # Printed immediately after [BOOT], no strategy/edge logic touched.
