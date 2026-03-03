@@ -25,7 +25,14 @@ from backtest.live.kill_switch import rolling_r_guard
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.portfolio_correlation_caps import apply_portfolio_correlation_caps
-
+# DEV A (PHASE2): PYRAMID bootstrap telemetry (no side-effects, fail-open)
+try:
+    from backtest.risk import pyramiding as _pyr  # noqa: F401
+    _PYRAMID_OK = True
+    _PYRAMID_IMPORT_ERR: str | None = None
+except Exception as _e:
+    _PYRAMID_OK = False
+    _PYRAMID_IMPORT_ERR = repr(_e)
 
 from backtest.live.portfolio import PortfolioConfig, PortfolioState, filter_signals_portfolio
 import backtest.journal.filter_trades as ft
@@ -2837,6 +2844,56 @@ def main():
         raise SystemExit("No symbols provided (MANUAL_SYMBOLS empty and no --bybit_symbol).")
 
     print(f"[BOOT] symbols={symbols} interval={args.bybit_interval} source={args.source}")
+
+
+
+    # --- [PYRAMID] contract tag (must appear every run) ---
+    # Printed immediately after [BOOT], no strategy/edge logic touched.
+    try:
+        if _PYRAMID_OK:
+            print("[PYRAMID] status=ACTIVE reason=module_ok")
+        else:
+            print(f"[PYRAMID] status=DISABLED reason=IMPORT_ERROR err={_PYRAMID_IMPORT_ERR}")
+    except Exception:
+        # never block runner on telemetry
+        pass
+
+    # ============================================================
+    # PHASE2 — PORTFOLIO_CAP TELEMETRY (1x per run, fail-open)
+    # ============================================================
+    try:
+        from backtest.portfolio.portfolio_exposure import load_portfolio_exposure
+
+        exp = load_portfolio_exposure(args.portfolio_state_path)
+        bu = (exp or {}).get("bucket_used", {}) or {}
+        positions = (exp or {}).get("positions", []) or []
+
+        btc = float(bu.get("BTC", 0.0) or 0.0)
+        alt = float(bu.get("ALT", 0.0) or 0.0)
+        meme = float(bu.get("MEME", 0.0) or 0.0)
+        total = float(bu.get("GLOBAL", btc + alt + meme) or (btc + alt + meme))
+
+        if isinstance(positions, list) and len(positions) > 0:
+            source = "positions"
+            reason = "OK"
+            status = "ENABLED"
+        else:
+            source = "state"
+            reason = "NO_POSITIONS"
+            status = "ENABLED"
+
+        print(
+            "[PORTFOLIO_CAP] "
+            f"btc={btc:.2f} alt={alt:.2f} meme={meme:.2f} total={total:.2f} "
+            f"source={source} status={status} reason={reason}"
+        )
+
+    except Exception as e:
+        print(
+            "[PORTFOLIO_CAP] "
+            "btc=0.00 alt=0.00 meme=0.00 total=0.00 "
+            f"source=state status=DISABLED reason={type(e).__name__}"
+        )
 
     # === LIQUIDATION CONTEXT (Bybit public WS, context-only) ===
     try:
