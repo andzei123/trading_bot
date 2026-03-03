@@ -21,3 +21,4 @@ __pycache__/
 backtest/journal/exports_live/*
 !backtest/journal/exports_live/.gitkeep
 "@ | Out-File -Encoding ascii -Append .gitignore
+patches/
