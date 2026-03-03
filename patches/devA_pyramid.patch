@@ -1,0 +1,51 @@
+﻿diff --git a/backtest/journal/live_signal_runner.py b/backtest/journal/live_signal_runner.py
+index ac1ab7d..f0c8c2a 100644
+--- a/backtest/journal/live_signal_runner.py
++++ b/backtest/journal/live_signal_runner.py
+@@ -1,12 +1,25 @@
+ from __future__ import annotations
+ 
+ import argparse
+ import os
+ import random
+ import subprocess
+ import sys
+ import time
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any, Dict, Iterable, List, Optional, Tuple
+ 
+ import numpy as np
+ import pandas as pd
+ 
++# DEV A (PHASE2): PYRAMID bootstrap telemetry (no side-effects, fail-open)
++try:
++    from backtest.risk import pyramiding as _pyr  # noqa: F401
++    _PYRAMID_OK = True
++    _PYRAMID_IMPORT_ERR: str | None = None
++except Exception as _e:
++    _PYRAMID_OK = False
++    _PYRAMID_IMPORT_ERR = repr(_e)
++
+@@ -2856,6 +2869,18 @@ def main():
+ 
+     symbols = _get_symbols(args)
+     print(f"[BOOT] symbols={symbols} interval={args.bybit_interval} source={args.source}")
++
++    # --- [PYRAMID] contract tag (must appear every run) ---
++    # Printed immediately after [BOOT], no strategy/edge logic touched.
++    try:
++        if _PYRAMID_OK:
++            print("[PYRAMID] status=ACTIVE reason=module_ok")
++        else:
++            print(f"[PYRAMID] status=DISABLED reason=IMPORT_ERROR err={_PYRAMID_IMPORT_ERR}")
++    except Exception:
++        # never block runner on telemetry
++        pass
+ 
+     # === LIQUIDATION CONTEXT (Bybit public WS, context-only) ===
+     try:
+         ok = start_liquidation_stream(symbols)
+         if ok:
+             print(f"[{now_utc_str()}] [LIQ] WS started for {len(symbols)} symbols")
+

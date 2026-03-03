@@ -1292,7 +1292,10 @@ def run_once(
 
     # --- DEV4: Cross-Asset Macro Sync ---
     cross_asset_regime = "NEUTRAL"
-    cross_asset_reason = ""
+    cross_asset_strength = 0.0
+    cross_asset_reason = "fallback"
+    cross_asset_status = "DISABLED"
+
     try:
         if compute_cross_asset_regime is not None:
             res = compute_cross_asset_regime(
@@ -1301,26 +1304,36 @@ def run_once(
                 total3_trend=macro_dec.get("total3_trend"),
                 btcd_trend=macro_dec.get("btcd_trend"),
                 dxy_trend=macro_dec.get("dxy_trend", None),
-                emit_telemetry=False,  # runner is source-of-truth for telemetry
+                emit_telemetry=False,
             )
-            cross_asset_regime = str(getattr(res, "cross_asset_regime", "NEUTRAL") or "NEUTRAL").upper()
+
+            cross_asset_regime = str(getattr(res, "cross_asset_regime", "NEUTRAL")).upper()
+            cross_asset_strength = float(getattr(res, "strength", 0.0))
             cross_asset_reason = str(getattr(res, "reason", "") or "")
-    except Exception:
+            cross_asset_status = "OK"
+
+    except Exception as e:
         cross_asset_regime = "NEUTRAL"
-        cross_asset_reason = "error"
+        cross_asset_strength = 0.0
+        cross_asset_reason = f"exception={type(e).__name__}"
+        cross_asset_status = "DISABLED"
 
     ctx["cross_asset_regime"] = cross_asset_regime
+    ctx["cross_asset_strength"] = cross_asset_strength
     ctx["cross_asset_reason"] = cross_asset_reason
 
-    # Telemetry: log ONCE per cycle (not per symbol)
+    # Telemetry – CONTRACT LOG
     global _CROSS_ASSET_LOGGED_TS
     try:
         _key = str(latest_ts)
         if _CROSS_ASSET_LOGGED_TS != _key:
-            if cross_asset_reason:
-                print(f"[CROSS_ASSET] regime={cross_asset_regime} reason={cross_asset_reason}")
-            else:
-                print(f"[CROSS_ASSET] regime={cross_asset_regime}")
+            print(
+                f"[CROSS_ASSET] "
+                f"regime={cross_asset_regime} "
+                f"strength={cross_asset_strength:.2f} "
+                f"reason={cross_asset_reason} "
+                f"status={cross_asset_status}"
+            )
             _CROSS_ASSET_LOGGED_TS = _key
     except Exception:
         pass
