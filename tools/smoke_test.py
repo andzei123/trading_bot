@@ -77,6 +77,35 @@ def run_runner() -> tuple[int, list[str]]:
 
     return proc.returncode, lines
 
+def run_feature_contract_check() -> int:
+    print("\nRunning feature_contract_check...\n")
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "tools" / "feature_contract_check.py"),
+    ]
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    out, _ = proc.communicate()
+    out = out or ""
+
+    for line in out.splitlines(keepends=True):
+        print(line, end="")
+
+    return int(proc.returncode or 0)
 
 def main() -> int:
     print("\n========== SMOKE TEST START ==========\n")
@@ -86,6 +115,11 @@ def main() -> int:
     print(f"Portfolio hash BEFORE: {h_before}")
 
     returncode, log_lines = run_runner()
+
+    rc_contract = run_feature_contract_check()
+    if rc_contract != 0:
+        print("\nFAIL: feature_contract_check failed")
+        return 3
 
     combined = "".join(log_lines)
 

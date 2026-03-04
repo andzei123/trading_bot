@@ -10,7 +10,7 @@ import re
 import json
 from pathlib import Path
 from typing import Optional, Callable, Any
-
+import os
 import importlib
 import pandas as pd
 import numpy as np
@@ -2937,6 +2937,32 @@ def main():
 
     print(f"[BOOT] symbols={symbols} interval={args.bybit_interval} source={args.source}")
 
+    # ------------------------------------------------------------
+    # RUN MODE contract (Phase3 KPI hard lock)
+    # ------------------------------------------------------------
+    RUN_MODE = (os.environ.get("RUN_MODE") or "KPI_VALIDATION").strip().upper()
+    if RUN_MODE not in ("KPI_VALIDATION", "DEV_DEBUG"):
+        RUN_MODE = "KPI_VALIDATION"
+
+    print(f"[RUN_MODE] mode={RUN_MODE}")
+    IS_KPI = (RUN_MODE == "KPI_VALIDATION")
+
+    # KPI_VALIDATION: force-disable debug toggles (fail-open)
+    if IS_KPI:
+        try:
+            args.debug_regime = False
+        except Exception:
+            pass
+        try:
+            args.debug_entry_filters = False
+        except Exception:
+            pass
+        try:
+            args.emit_last_candles = 0
+        except Exception:
+            pass
+
+
     # --- [SYMBOL_PERF] contract tag (must appear every run, fail-open) ---
     try:
         # IMPORTANT: čia turi būti TRADES failas, ne regime/perf CSV.
@@ -2999,14 +3025,25 @@ def main():
         )
 
     # === LIQUIDATION CONTEXT (Bybit public WS, context-only) ===
+    # Contract: exactly-once per --once run. Runner owns the [LIQ] log (no prints inside liquidation.py).
+    syms = list(symbols)
+
+    liq_ok = False
+    liq_reason = "START_FAILED"
+    liq_err = ""
+
     try:
-        ok = start_liquidation_stream(symbols)
-        if ok:
-            print(f"[{now_utc_str()}] [LIQ] WS started for {len(symbols)} symbols")
-        else:
-            print(f"[{now_utc_str()}] [LIQ] WS disabled")
+        liq_ok = bool(start_liquidation_stream(syms))
+        liq_reason = "OK" if liq_ok else "START_FAILED"
     except Exception as e:
-        print(f"[{now_utc_str()}] [LIQ] WS start failed (ignored): {e}")
+        liq_ok = False
+        liq_reason = "EXCEPTION"
+        liq_err = f" err={repr(e)}"
+
+    if liq_ok:
+        print(f"[{now_utc_str()}] [LIQ] WS started for {len(syms)} symbols")
+    else:
+        print(f"[{now_utc_str()}] [LIQ] WS disabled reason={liq_reason}{liq_err}")
 
 
     # Ensure state file exists even if no signals are emitted
@@ -3098,7 +3135,7 @@ def main():
                 decision=decision_sym,
                 risk_guard_status=str(guard_status),
                 risk_guard_action=str(getattr(args, "risk_guard_action", "defensive")),
-                emit_last_candles=int(getattr(args, "emit_last_candles", 0) or 0),
+                emit_last_candles=(0 if IS_KPI else int(getattr(args, "emit_last_candles", 0) or 0)),
                 from_ts=str(getattr(args, "from_ts", "")),
                 live_max_setup_age_candles=int(getattr(args, "live_max_setup_age_candles", 0) or 0),
                 portfolio_state_path=str(getattr(args, "portfolio_state_path", "backtest/journal/exports_live/portfolio_state.json")),
@@ -3180,7 +3217,7 @@ def main():
                     decision_sym,
                     risk_guard_status=str(guard_status),
                     risk_guard_action=str(getattr(args, "risk_guard_action", "defensive")),
-                    emit_last_candles=int(getattr(args, "emit_last_candles", 0) or 0),
+                    emit_last_candles=(0 if IS_KPI else int(getattr(args, "emit_last_candles", 0) or 0)),
                     from_ts=str(getattr(args, "from_ts", "")),
                     setup_keep_candles=int(getattr(args, "setup_keep_candles", 96) or 96),
                     live_max_setup_age_candles=int(getattr(args, "live_max_setup_age_candles", 0) or 0),
