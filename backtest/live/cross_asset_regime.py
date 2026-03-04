@@ -31,6 +31,7 @@ Trend = str  # "UP" | "DOWN" | "FLAT"
 @dataclass(frozen=True)
 class CrossAssetRegimeResult:
     cross_asset_regime: Regime
+    strength: float
     reason: str
 
 
@@ -84,13 +85,13 @@ def compute_cross_asset_regime(
     dxy = _norm_trend(dxy_trend)
 
     # Primary patterns
-    tags = []
+    tags: list[str] = []
 
     if eth_missing_optional:
         tags.append("ETH_MISSING_OPTIONAL")
 
     # RISK_ON: classic rotation + optional ETH
-    # If ETH is missing, still allow BTC+TOTAL2+BTC.D to determine.
+    # If ETH is missing, still allow BTC+TOTAL3+BTC.D to determine.
     risk_on = (btc == "UP" and t3 == "UP" and btcd == "DOWN" and (eth == "UP" or eth_missing_optional))
 
     # RISK_OFF: dominance up while alts down is sufficient. ETH DOWN strengthens when available.
@@ -123,11 +124,38 @@ def compute_cross_asset_regime(
         regime = "NEUTRAL"
         tags.append("MIXED")
 
+    # --- strength calculation (deterministic) ---
+    score = 0
+
+    if btc == "UP":
+        score += 1
+    elif btc == "DOWN":
+        score -= 1
+
+    if t3 == "UP":
+        score += 1
+    elif t3 == "DOWN":
+        score -= 1
+
+    if btcd == "DOWN":
+        score += 1
+    elif btcd == "UP":
+        score -= 1
+
+    if eth == "UP":
+        score += 1
+    elif eth == "DOWN":
+        score -= 1
+
+    strength = min(abs(score) / 4.0, 1.0)
+
     reason = f"btc={btc} eth={eth} total3={t3} btcd={btcd} dxy={dxy} tags={','.join(tags)}"
-    res = CrossAssetRegimeResult(regime, reason)
-    if emit_telemetry:
-        print(f"[CROSS_ASSET] regime={res.cross_asset_regime} reason={res.reason}")
-    return res
+
+    return CrossAssetRegimeResult(
+        cross_asset_regime=regime,
+        strength=float(strength),
+        reason=reason,
+    )
 
 
 def trend_from_closes(

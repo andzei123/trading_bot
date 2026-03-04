@@ -25,7 +25,14 @@ from backtest.live.kill_switch import rolling_r_guard
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.portfolio_correlation_caps import apply_portfolio_correlation_caps
-
+# DEV A (PHASE2): PYRAMID bootstrap telemetry (no side-effects, fail-open)
+try:
+    from backtest.risk import pyramiding as _pyr  # noqa: F401
+    _PYRAMID_OK = True
+    _PYRAMID_IMPORT_ERR: str | None = None
+except Exception as _e:
+    _PYRAMID_OK = False
+    _PYRAMID_IMPORT_ERR = repr(_e)
 
 from backtest.live.portfolio import PortfolioConfig, PortfolioState, filter_signals_portfolio
 import backtest.journal.filter_trades as ft
@@ -422,6 +429,85 @@ def _append_csv(path: Path, df: pd.DataFrame) -> None:
         return
     df.to_csv(path, mode="a", index=False, header=False)
 
+
+def _print_symbol_perf_contract(trades_csv: str) -> None:
+    """
+    Phase2 SYMBOL_PERF contract log.
+    Always prints, fail-open.
+
+    Contract:
+      [SYMBOL_PERF] sharpe=... winrate=... n=... window=... status=OK|DISABLED reason=...
+    """
+    try:
+        from pathlib import Path
+        import pandas as pd
+        import numpy as np
+        import math
+
+        if not trades_csv or not Path(trades_csv).exists():
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_TRADES_FILE")
+            return
+
+        df = pd.read_csv(trades_csv, engine="python", on_bad_lines="skip")
+
+        if df is None or df.empty:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_TRADES")
+            return
+
+        # ---- derive R (prefer direct R cols; fallback to outcome+rr) ----
+        r = None
+        for col in ("R", "r", "realized_r", "realized_R", "pnl_r"):
+            if col in df.columns:
+                r = pd.to_numeric(df[col], errors="coerce")
+                break
+
+        if r is None and "outcome" in df.columns:
+            out = df["outcome"].astype(str).str.upper().fillna("")
+            rr = pd.to_numeric(df["rr"], errors="coerce") if "rr" in df.columns else pd.Series(1.0, index=df.index)
+
+            r = pd.Series(np.nan, index=df.index, dtype=float)
+            win = out.isin(["WIN", "TP", "TP_HIT"])
+            loss = out.isin(["LOSS", "SL", "SL_HIT"])
+            be = out.isin(["BE", "BREAKEVEN"])
+
+            r.loc[win] = rr.loc[win].astype(float)
+            r.loc[loss] = -1.0
+            r.loc[be] = 0.0
+
+        if r is None:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_R_FIELDS")
+            return
+
+        r = pd.to_numeric(r, errors="coerce").dropna()
+        n_total = int(len(r))
+        if n_total <= 0:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=60 status=DISABLED reason=NO_VALID_R")
+            return
+
+        # institutional rolling window: 120 if available else 60 else n
+        window = 120 if n_total >= 120 else (60 if n_total >= 60 else n_total)
+        rrw = r.tail(window).astype(float).to_numpy()
+        n_win = int(len(rrw))
+
+        if n_win <= 0:
+            print(f"[SYMBOL_PERF] sharpe=None winrate=None n={n_total} window={window} status=DISABLED reason=EMPTY_WINDOW")
+            return
+
+        avg = float(rrw.mean()) if n_win else 0.0
+        std = float(rrw.std(ddof=0)) if n_win else 0.0
+        sharpe = float((avg / std) * math.sqrt(n_win)) if (n_win > 1 and std > 1e-12) else 0.0
+        winrate = float((rrw > 0).mean()) if n_win else 0.0
+
+        print(
+            f"[SYMBOL_PERF] sharpe={sharpe:.2f} winrate={winrate:.2f} "
+            f"n={n_total} window={window} status=OK reason=COMPUTED"
+        )
+
+    except Exception as e:
+        print(
+            "[SYMBOL_PERF] sharpe=None winrate=None "
+            f"n=0 window=60 status=DISABLED reason={type(e).__name__}"
+        )
 
 # Stable schema for live entries output.
 # Even if a run produces 0 rows, we still write an empty CSV with this header
@@ -1206,7 +1292,10 @@ def run_once(
 
     # --- DEV4: Cross-Asset Macro Sync ---
     cross_asset_regime = "NEUTRAL"
-    cross_asset_reason = ""
+    cross_asset_strength = 0.0
+    cross_asset_reason = "fallback"
+    cross_asset_status = "DISABLED"
+
     try:
         if compute_cross_asset_regime is not None:
             res = compute_cross_asset_regime(
@@ -1215,26 +1304,36 @@ def run_once(
                 total3_trend=macro_dec.get("total3_trend"),
                 btcd_trend=macro_dec.get("btcd_trend"),
                 dxy_trend=macro_dec.get("dxy_trend", None),
-                emit_telemetry=False,  # runner is source-of-truth for telemetry
+                emit_telemetry=False,
             )
-            cross_asset_regime = str(getattr(res, "cross_asset_regime", "NEUTRAL") or "NEUTRAL").upper()
+
+            cross_asset_regime = str(getattr(res, "cross_asset_regime", "NEUTRAL")).upper()
+            cross_asset_strength = float(getattr(res, "strength", 0.0))
             cross_asset_reason = str(getattr(res, "reason", "") or "")
-    except Exception:
+            cross_asset_status = "OK"
+
+    except Exception as e:
         cross_asset_regime = "NEUTRAL"
-        cross_asset_reason = "error"
+        cross_asset_strength = 0.0
+        cross_asset_reason = f"exception={type(e).__name__}"
+        cross_asset_status = "DISABLED"
 
     ctx["cross_asset_regime"] = cross_asset_regime
+    ctx["cross_asset_strength"] = cross_asset_strength
     ctx["cross_asset_reason"] = cross_asset_reason
 
-    # Telemetry: log ONCE per cycle (not per symbol)
+    # Telemetry – CONTRACT LOG
     global _CROSS_ASSET_LOGGED_TS
     try:
         _key = str(latest_ts)
         if _CROSS_ASSET_LOGGED_TS != _key:
-            if cross_asset_reason:
-                print(f"[CROSS_ASSET] regime={cross_asset_regime} reason={cross_asset_reason}")
-            else:
-                print(f"[CROSS_ASSET] regime={cross_asset_regime}")
+            print(
+                f"[CROSS_ASSET] "
+                f"regime={cross_asset_regime} "
+                f"strength={cross_asset_strength:.2f} "
+                f"reason={cross_asset_reason} "
+                f"status={cross_asset_status}"
+            )
             _CROSS_ASSET_LOGGED_TS = _key
     except Exception:
         pass
@@ -2837,6 +2936,67 @@ def main():
         raise SystemExit("No symbols provided (MANUAL_SYMBOLS empty and no --bybit_symbol).")
 
     print(f"[BOOT] symbols={symbols} interval={args.bybit_interval} source={args.source}")
+
+    # --- [SYMBOL_PERF] contract tag (must appear every run, fail-open) ---
+    try:
+        # IMPORTANT: čia turi būti TRADES failas, ne regime/perf CSV.
+        # Jei turi args.trades_csv ar panašų — naudok jį. Jei ne, palik default.
+        trades_csv = getattr(args, "trades_csv", None) or "backtest/journal/trades.csv"
+        _print_symbol_perf_contract(trades_csv)
+    except Exception:
+        # never block runner on telemetry
+        try:
+            print("[SYMBOL_PERF] sharpe=None winrate=None n=0 window=0 status=DISABLED reason=EXC")
+        except Exception:
+            pass
+
+    # --- [PYRAMID] contract tag (must appear every run) ---
+    # Printed immediately after [BOOT], no strategy/edge logic touched.
+    try:
+        if _PYRAMID_OK:
+            print("[PYRAMID] status=ACTIVE reason=module_ok")
+        else:
+            print(f"[PYRAMID] status=DISABLED reason=IMPORT_ERROR err={_PYRAMID_IMPORT_ERR}")
+    except Exception:
+        # never block runner on telemetry
+        pass
+
+    # ============================================================
+    # PHASE2 — PORTFOLIO_CAP TELEMETRY (1x per run, fail-open)
+    # ============================================================
+    try:
+        from backtest.portfolio.portfolio_exposure import load_portfolio_exposure
+
+        exp = load_portfolio_exposure(args.portfolio_state_path)
+        bu = (exp or {}).get("bucket_used", {}) or {}
+        positions = (exp or {}).get("positions", []) or []
+
+        btc = float(bu.get("BTC", 0.0) or 0.0)
+        alt = float(bu.get("ALT", 0.0) or 0.0)
+        meme = float(bu.get("MEME", 0.0) or 0.0)
+        total = float(bu.get("GLOBAL", btc + alt + meme) or (btc + alt + meme))
+
+        if isinstance(positions, list) and len(positions) > 0:
+            source = "positions"
+            reason = "OK"
+            status = "ENABLED"
+        else:
+            source = "state"
+            reason = "NO_POSITIONS"
+            status = "ENABLED"
+
+        print(
+            "[PORTFOLIO_CAP] "
+            f"btc={btc:.2f} alt={alt:.2f} meme={meme:.2f} total={total:.2f} "
+            f"source={source} status={status} reason={reason}"
+        )
+
+    except Exception as e:
+        print(
+            "[PORTFOLIO_CAP] "
+            "btc=0.00 alt=0.00 meme=0.00 total=0.00 "
+            f"source=state status=DISABLED reason={type(e).__name__}"
+        )
 
     # === LIQUIDATION CONTEXT (Bybit public WS, context-only) ===
     try:
