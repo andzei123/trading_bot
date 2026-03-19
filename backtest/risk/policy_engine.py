@@ -27,6 +27,110 @@ def evaluate_policy_has_open(
     }
 
 
+def evaluate_policy_corr_cap(
+    df_e: pd.DataFrame,
+    *,
+    portfolio_state_path: str,
+    base_risk: float = 0.002,
+    cap_btc: float = 0.02,
+    cap_alt: float = 0.02,
+    cap_meme: float = 0.01,
+) -> dict[str, Any]:
+    from backtest.portfolio.portfolio_exposure import load_portfolio_exposure
+
+    corr_btc_used = 0.0
+    corr_alt_used = 0.0
+    corr_meme_used = 0.0
+
+    try:
+        exp = load_portfolio_exposure(portfolio_state_path)
+        bu = exp.get("bucket_used", {}) or {}
+        corr_btc_used = float(bu.get("BTC", 0.0) or 0.0)
+        corr_alt_used = float(bu.get("ALT", 0.0) or 0.0)
+        corr_meme_used = float(bu.get("MEME", 0.0) or 0.0)
+    except Exception:
+        pass
+
+    kept_rows: list[Any] = []
+    dropped_rows: list[Any] = []
+
+    if df_e is not None and not df_e.empty:
+        for _, r in df_e.iterrows():
+            symbol = str(r.get("symbol", "")).upper()
+
+            rm_raw = r.get("risk_multiplier", 1.0)
+
+            try:
+                rm = float(rm_raw)
+            except Exception:
+                rm = 1.0
+
+            if rm != rm or rm == float("inf") or rm == float("-inf"):
+                rm = 1.0
+
+            plan_risk = float(base_risk * rm)
+
+            if plan_risk != plan_risk or plan_risk == float("inf") or plan_risk == float("-inf"):
+                plan_risk = 0.0
+
+            if symbol.startswith("BTC"):
+                bucket = "BTC"
+                used = corr_btc_used
+                cap = cap_btc
+            elif symbol in ["DOGEUSDT", "PEPEUSDT", "WIFUSDT"]:
+                bucket = "MEME"
+                used = corr_meme_used
+                cap = cap_meme
+            else:
+                bucket = "ALT"
+                used = corr_alt_used
+                cap = cap_alt
+
+            try:
+                used = float(used) if used is not None else 0.0
+            except Exception:
+                used = 0.0
+            try:
+                cap = float(cap) if cap is not None else 0.0
+            except Exception:
+                cap = 0.0
+            if used != used:
+                used = 0.0
+            if cap != cap:
+                cap = 0.0
+
+            would = used + plan_risk
+
+            if would > cap * 1.2:
+                dropped_rows.append(r)
+                continue
+
+            if would > cap:
+                new_rm = rm * 0.25
+                r["risk_multiplier"] = new_rm
+                plan_risk = base_risk * new_rm
+
+            if bucket == "BTC":
+                corr_btc_used += plan_risk
+            elif bucket == "ALT":
+                corr_alt_used += plan_risk
+            else:
+                corr_meme_used += plan_risk
+
+            kept_rows.append(r)
+
+        df_kept = pd.DataFrame(kept_rows)
+        df_drop = pd.DataFrame(dropped_rows)
+    else:
+        df_kept = df_e
+        df_drop = df_e
+
+    return {
+        "df_kept": df_kept,
+        "df_drop": df_drop,
+    }
+
+
 def evaluate_policy_budget(
     df_e: pd.DataFrame,
     *,

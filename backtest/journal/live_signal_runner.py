@@ -28,8 +28,7 @@ from backtest.live.tts_context import annotate_tts_context, get_tts_context_at
 from backtest.live.kill_switch import rolling_r_guard
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
-from backtest.risk.portfolio_correlation_caps import apply_portfolio_correlation_caps
-from backtest.risk.policy_engine import evaluate_policy_budget
+from backtest.risk.policy_engine import evaluate_policy_budget, evaluate_policy_corr_cap
 # DEV A (PHASE2): PYRAMID bootstrap telemetry (no side-effects, fail-open)
 try:
     from backtest.risk import pyramiding as _pyr  # noqa: F401
@@ -2086,108 +2085,22 @@ def run_once(
 
 # ===== CORR_CAP (SOFT + DEBUG) =====
 
-    from backtest.portfolio.portfolio_exposure import load_portfolio_exposure
-
     CAP_BTC = 0.02
     CAP_ALT = 0.02
     CAP_MEME = 0.01
-
-    corr_btc_used = corr_alt_used = corr_meme_used = 0.0
-
-    try:
-        exp = load_portfolio_exposure(portfolio_state_path)
-        bu = exp.get("bucket_used", {}) or {}
-        corr_btc_used = float(bu.get("BTC", 0.0) or 0.0)
-        corr_alt_used = float(bu.get("ALT", 0.0) or 0.0)
-        corr_meme_used = float(bu.get("MEME", 0.0) or 0.0)
-    except Exception:
-        pass
-
-    df_corr_kept = []
-    df_corr_dropped = []
-
     BASE_RISK = 0.002
 
-    for _, r in df_e.iterrows():
+    corr_cap_decision = evaluate_policy_corr_cap(
+        df_e,
+        portfolio_state_path=portfolio_state_path,
+        base_risk=BASE_RISK,
+        cap_btc=CAP_BTC,
+        cap_alt=CAP_ALT,
+        cap_meme=CAP_MEME,
+    )
 
-        side = str(r.get("side", "")).upper()
-        symbol = str(r.get("symbol", "")).upper()
-
-        rm_raw = r.get("risk_multiplier", 1.0)
-
-        try:
-            rm = float(rm_raw)
-        except Exception:
-            rm = 1.0
-
-        # NaN / inf clamp
-        if rm != rm or rm == float("inf") or rm == float("-inf"):
-            rm = 1.0
-
-        plan_risk = float(BASE_RISK * rm)
-
-        # final safety (niekada ne NaN)
-        if plan_risk != plan_risk or plan_risk == float("inf") or plan_risk == float("-inf"):
-            plan_risk = 0.0
-
-        # bucket detect (simplified)
-        if symbol.startswith("BTC"):
-            bucket = "BTC"
-            used = corr_btc_used
-            cap = CAP_BTC
-        elif symbol in ["DOGEUSDT", "PEPEUSDT", "WIFUSDT"]:
-            bucket = "MEME"
-            used = corr_meme_used
-            cap = CAP_MEME
-        else:
-            bucket = "ALT"
-            used = corr_alt_used
-            cap = CAP_ALT
-
-        # ✅ MICRO FIX: clamp used/cap (fail-safe)
-        try:
-            used = float(used) if used is not None else 0.0
-        except Exception:
-            used = 0.0
-        try:
-            cap = float(cap) if cap is not None else 0.0
-        except Exception:
-            cap = 0.0
-        # NaN-safe
-        if used != used:
-            used = 0.0
-        if cap != cap:
-            cap = 0.0
-
-        would = used + plan_risk
-
-        # CORR_CAP_DEBUG reduced to summary logs below to avoid per-row spam
-
-        # HARD DROP only if > 1.2x cap
-        if would > cap * 1.2:
-            df_corr_dropped.append(r)
-            continue
-
-        # SOFT CAP: if over cap but <= 1.2x → throttle
-        if would > cap:
-            new_rm = rm * 0.25
-            r["risk_multiplier"] = new_rm
-            plan_risk = BASE_RISK * new_rm
-            # CORR_CAP_SOFT kept silent here; summary remains in [CORR_CAP] log below
-
-
-        # update exposure
-        if bucket == "BTC":
-            corr_btc_used += plan_risk
-        elif bucket == "ALT":
-            corr_alt_used += plan_risk
-        else:
-            corr_meme_used += plan_risk
-
-        df_corr_kept.append(r)
-
-    df_e = pd.DataFrame(df_corr_kept)
-    df_corr_dropped = pd.DataFrame(df_corr_dropped)
+    df_e = corr_cap_decision["df_kept"]
+    df_corr_dropped = corr_cap_decision["df_drop"]
 
     if not df_corr_dropped.empty:
         _append_dropped(Path(out_csv), df_corr_dropped, stage="CORR_CAP", reason="CORR_CAP", drop_ts=latest_ts)
@@ -2198,7 +2111,8 @@ def run_once(
 
    # print(f"[{now_utc_str()}] [CORR_CAP][{bybit_symbol}] kept={len(df_e)} dropped={len(df_corr_dropped)}")
 
-    # ============================================================
+    
+# ============================================================
     # DEV2: BUDGET_CAP enforcement + telemetry
     # ============================================================
     BASE_RISK_PER_TRADE = 0.002
