@@ -2559,6 +2559,10 @@ def run_once(
 
         before_window = len(df_e)
         df_e = df_e[df_e["setup_ts"] >= cutoff_live].copy()
+        print(
+            f"[POST_REGIME_LIVE_WINDOW] before={before_window} after={len(df_e)} "
+            f"cutoff_live={cutoff_live}"
+        )
         try:
             trace_counts["after_live_window"] = int(len(df_e))
             trace_counts["dropped_live_window"] = int(before_window - len(df_e))
@@ -2578,8 +2582,8 @@ def run_once(
         # --- LIVE-only emission guard: emit only if setup_age_candles <= X (0 disables) ---
         try:
             max_age = int(live_max_setup_age_candles or 0)
+            before_age = len(df_e)
             if max_age > 0 and "setup_age_candles" in df_e.columns:
-                before_age = len(df_e)
                 df_e = df_e[df_e["setup_age_candles"] <= float(max_age)].copy()
                 try:
                     trace_counts["after_live_guard"] = int(len(df_e))
@@ -2591,6 +2595,10 @@ def run_once(
                         f"[{now_utc_str()}] [DEBUG] live age guard: max_age={max_age} "
                         f"kept={len(df_e)} (from {before_age})"
                     )
+            print(
+                f"[POST_REGIME_MAX_AGE] before={before_age} after={len(df_e)} "
+                f"max_age={live_max_setup_age_candles}"
+            )
         except Exception:
             pass
 
@@ -2937,6 +2945,17 @@ def run_once(
     block_phases = _upper_list(getattr(decision, "block_phases", None))
     print(
         f"[{now_utc_str()}] [DEBUG] before_regime df_e={len(df_e)} models={df_e['model'].unique().tolist() if len(df_e) else []} sides={df_e['side'].unique().tolist() if len(df_e) else []}")
+    print(
+        f"[{now_utc_str()}] [DEBUG] regime_decision "
+        f"profile={getattr(decision, 'profile', None)} "
+        f"reason={getattr(decision, 'reason', None)} "
+        f"allow_models={getattr(decision, 'allow_models', None)} "
+        f"block_models={getattr(decision, 'block_models', None)} "
+        f"allow_sides={getattr(decision, 'allow_sides', None)} "
+        f"block_sides={getattr(decision, 'block_sides', None)} "
+        f"allow_phases={getattr(decision, 'allow_phases', None)} "
+        f"block_phases={getattr(decision, 'block_phases', None)}"
+    )
 
     df_before_regime = df_e.copy()
 
@@ -2949,6 +2968,14 @@ def run_once(
     block_sides = _none_if_empty(block_sides)
     allow_phases = _none_if_empty(allow_phases)
     block_phases = _none_if_empty(block_phases)
+
+    if os.getenv("BYPASS_REGIME_FILTERS", "0") == "1":
+        allow_models = None
+        block_models = None
+        allow_sides = None
+        block_sides = None
+        allow_phases = None
+        block_phases = None
 
     # === RegimeDecision hard filters ===
     if allow_models:
@@ -2970,7 +2997,13 @@ def run_once(
     if block_phases:
         df_e = df_e[~df_e[_phase_col].astype(str).str.upper().isin(block_phases)].copy()
 
-    
+    print(
+        f"[{now_utc_str()}] [DEBUG] after_regime "
+        f"df_e={len(df_e)} "
+        f"models={df_e['model'].unique().tolist() if len(df_e) else []} "
+        f"sides={df_e['side'].unique().tolist() if len(df_e) else []}"
+    )
+
     trace_counts["after_regime"] = int(len(df_e))
     _trace(trace_on, f"after_regime={len(df_e)}")
     _status("after_regime", allow_models=allow_models, block_models=block_models, allow_sides=allow_sides, block_sides=block_sides, allow_phases=allow_phases, block_phases=block_phases)
@@ -3095,12 +3128,14 @@ def run_once(
             if "symbol" not in df_e.columns:
                 df_e["symbol"] = bybit_symbol
 
+            before_portfolio = len(df_e)
             df_e = filter_signals_portfolio(
                 signals_df=df_e,
                 cfg=cfg,
                 state=state,
                 bybit_interval_min=int(bybit_interval),
             )
+            print(f"[POST_REGIME_PORTFOLIO] before={before_portfolio} after={len(df_e)}")
             # Persist portfolio state only in live mode.
             if not backfill_mode:
                 state.save()
@@ -3117,16 +3152,21 @@ def run_once(
             print(f"[{now_utc_str()}] Portfolio filter error -> fallback: {e}")
 
     # keep only new entries since last state
-    # (skip when backfilling with --emit_last_candles)
-    if not emit_last_candles:
+    # apply only in continuous live loop; skip in --once and backfill/debug
+    before_last_seen = len(df_e)
+    last_ts = None
+    if (not once) and emit_last_candles == 0 and os.getenv("BYPASS_LAST_SEEN", "0") != "1":
         last_ts = _read_state(state_path)
-        if last_ts is not None and "signal_ts" in df_e.columns:
-            if "signal_ts" in df_e.columns:
-
-                df_e["signal_ts"] = pd.to_datetime(df_e["signal_ts"], utc=True, errors="coerce")
-            df_e = df_e[df_e["signal_ts"] > last_ts].copy()
+        df_e["signal_ts"] = pd.to_datetime(df_e["signal_ts"], utc=True, errors="coerce")
+        df_e = df_e[df_e["signal_ts"] > last_ts].copy()
+    print(
+        f"[POST_REGIME_LAST_SEEN] before={before_last_seen} after={len(df_e)} "
+        f"last_ts={last_ts}"
+    )
     # TRACE/STATUS: after last_seen filter
-    if emit_last_candles:
+    if once:
+        trace_counts["after_last_seen"] = "SKIP (--once mode)"
+    elif emit_last_candles:
         trace_counts["after_last_seen"] = "SKIP (emit_last_candles/backfill mode)"
     else:
         trace_counts["after_last_seen"] = int(len(df_e))
@@ -3309,6 +3349,7 @@ def run_once(
                     pd.DataFrame(columns=SIGNALS_COLS).to_csv(signals_path, index=False)
             else:
                 df_sig.to_csv(signals_path, index=False)
+                print(f"[{now_utc_str()}] Wrote {len(df_sig)} entries -> {signals_path}")
 
                 _paper_trades_path = Path("backtest/journal/exports_live/paper_trades.csv")
                 _paper_before_n = 0
@@ -3420,7 +3461,7 @@ def run_once(
     except Exception:
         pass
 
-    print(f"[{now_utc_str()}] Wrote {len(df_e)} entries -> {out_csv}")
+    print(f"[{now_utc_str()}] Wrote {len(df_e)} entries -> live_entries {out_csv}")
     return int(len(df_e))
 
 
