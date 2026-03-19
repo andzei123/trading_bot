@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+from backtest.risk.policy_engine import evaluate_policy_has_open
 
 DEFAULT_SIGNALS = Path("backtest/journal/exports_live/signals_live.csv")
 DEFAULT_OUT = Path("backtest/journal/exports_live/paper_trades.csv")
@@ -121,18 +122,15 @@ def run_paper_executor(
     last_symbol = str(last.get("symbol", ""))
 
     # Consider OPEN rows for the same symbol as active positions
-    has_open = False
-    try:
-        has_open = (
-            (df_tr["status"].astype(str).str.upper() == "OPEN")
-            & (df_tr["symbol"].astype(str) == last_symbol)
-        ).any()
-    except Exception:
-        has_open = False
+    has_open_decision = evaluate_policy_has_open(
+        df_tr,
+        symbol=last_symbol,
+        allow_multiple=bool(allow_multiple),
+    )
 
-    if has_open and (not allow_multiple):
+    if has_open_decision["block"]:
         # Do not open a duplicate position for the same symbol
-        print(f"[PAPER] skip open symbol={last_symbol} reason=HAS_OPEN")
+        print(f"[PAPER] skip open symbol={last_symbol} reason={has_open_decision['reason']}")
         return 0
 
     ts = last.get("signal_ts") if "signal_ts" in df_sig.columns else None

@@ -29,6 +29,7 @@ from backtest.live.kill_switch import rolling_r_guard
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.portfolio_correlation_caps import apply_portfolio_correlation_caps
+from backtest.risk.policy_engine import evaluate_policy_budget
 # DEV A (PHASE2): PYRAMID bootstrap telemetry (no side-effects, fail-open)
 try:
     from backtest.risk import pyramiding as _pyr  # noqa: F401
@@ -2204,68 +2205,21 @@ def run_once(
     BUCKET_CAP = 0.006
     GLOBAL_CAP = 0.012
 
-    # portfolio-aware used (best-effort; jei turi kitą usage skaičiavimą – prijunk čia)
-    long_used = 0.0
-    range_used = 0.0
-    short_used = 0.0
-    global_used = 0.0
+    budget_decision = evaluate_policy_budget(
+        df_e,
+        base_risk_per_trade=BASE_RISK_PER_TRADE,
+        bucket_cap=BUCKET_CAP,
+        global_cap=GLOBAL_CAP,
+    )
 
-    kept_rows = []
-    dropped_rows = []
+    long_used = float(budget_decision["long_used"])
+    range_used = float(budget_decision["range_used"])
+    short_used = float(budget_decision["short_used"])
+    global_used = float(budget_decision["global_used"])
 
     if df_e is not None and not df_e.empty:
-        # plan_risk: base * (jei turi multipliers – naudok juos)
-        # jei pas tave yra risk_multiplier / dynamic_multiplier / equity_governor_multiplier – pritaikom
-        if "risk_multiplier" in df_e.columns:
-            rm = pd.to_numeric(df_e["risk_multiplier"], errors="coerce").fillna(1.0)
-        else:
-            rm = pd.Series(1.0, index=df_e.index)
-
-        if "dynamic_multiplier" in df_e.columns:
-            dm = pd.to_numeric(df_e["dynamic_multiplier"], errors="coerce").fillna(1.0)
-        else:
-            dm = pd.Series(1.0, index=df_e.index)
-
-        if "equity_governor_multiplier" in df_e.columns:
-            egm = pd.to_numeric(df_e["equity_governor_multiplier"], errors="coerce").fillna(1.0)
-        else:
-            egm = pd.Series(1.0, index=df_e.index)
-
-        try:
-            df_e["plan_risk"] = float(BASE_RISK_PER_TRADE) * rm.astype(float) * (
-                dm.astype(float) if hasattr(dm, "astype") else float(dm)) * (
-                                    egm.astype(float) if hasattr(egm, "astype") else float(egm))
-        except Exception:
-            df_e["plan_risk"] = float(BASE_RISK_PER_TRADE) * rm.astype(float)
-
-        for _, r in df_e.iterrows():
-            side = str(r.get("side", "")).upper()
-            plan_risk = float(r.get("plan_risk", BASE_RISK_PER_TRADE) or BASE_RISK_PER_TRADE)
-
-            if side == "LONG":
-                if (long_used + plan_risk > BUCKET_CAP) or (global_used + plan_risk > GLOBAL_CAP):
-                    dropped_rows.append(r)
-                    continue
-                long_used += plan_risk
-
-            elif side == "SHORT":
-                if (short_used + plan_risk > BUCKET_CAP) or (global_used + plan_risk > GLOBAL_CAP):
-                    dropped_rows.append(r)
-                    continue
-                short_used += plan_risk
-
-            else:
-                # default -> RANGE
-                if (range_used + plan_risk > BUCKET_CAP) or (global_used + plan_risk > GLOBAL_CAP):
-                    dropped_rows.append(r)
-                    continue
-                range_used += plan_risk
-
-            global_used += plan_risk
-            kept_rows.append(r)
-
-        df_kept = pd.DataFrame(kept_rows)
-        df_drop = pd.DataFrame(dropped_rows)
+        df_kept = budget_decision["df_kept"]
+        df_drop = budget_decision["df_drop"]
         df_e = df_kept
 
         print(
@@ -2285,12 +2239,6 @@ def run_once(
 
         if not df_drop.empty:
             _append_dropped(Path(out_csv), df_drop, stage="BUDGET_CAP", reason="BUDGET_CAP", drop_ts=latest_ts)
-
-    else:
-        print(
-            f"[{now_utc_str()}] [BUDGET][{bybit_symbol}] kept=0 dropped=0 "
-            f"long_used={long_used:.4f} range_used={range_used:.4f} short_used={short_used:.4f} global_used={global_used:.4f}"
-        )
 
     # --- normalize symbol field ---
     if "symbol" not in df_e.columns and "sym" in df_e.columns:
