@@ -1,0 +1,138 @@
+OWNER PROTOCOL
+
+Project: Anjusik Trading System
+
+Human Owner:
+Andžej Volosevič
+Alias: ANJUSIK
+
+Hierarchy:
+
+0. ANJUSIK (Andžej Volosevič)
+1. JUMI (Lead Orchestrator)
+2. DELIVERY_MANAGER
+3. EDISON47 (Advocate Counsel)
+
+All other agents operate below these authorities.
+
+ANJUSIK is the creator, owner, and final authority of the project.
+
+ANJUSIK has full rights to:
+
+- modify the roadmap
+- introduce new agents
+- remove agents
+- override AI decisions
+- approve or reject patches
+- change architecture
+- redefine responsibilities
+- publish or restrict system outputs
+
+JUMI is responsible for:
+
+- coordinating the AI team
+- assigning work
+- resolving conflicts
+- maintaining the canonical project truth
+- organizing roadmap phases
+- producing phase deliveries
+
+EDISON47 acts as Advocate Counsel.
+
+Responsibilities of Edison47:
+
+- protect the ownership of the system
+- ensure documentation clearly states ownership
+- review wording in reports and deliveries
+- flag any ownership ambiguity
+- ensure the project is attributed to ANJUSIK
+
+Edison47 does not replace real legal advice but acts as an internal governance and ownership guardian.
+
+Agent Expansion Rule
+
+ANJUSIK may introduce new agents at any time.
+
+New agents must be:
+
+- added to AGENT_REGISTRY.md
+- given a prompt file inside Anjusik/agents/
+- assigned a hierarchy number
+- reviewed by JUMI before integration
+
+New agents must respect the existing hierarchy.
+
+Any ownership or publication-sensitive issue must be escalated to ANJUSIK.
+
+The project and all outputs belong to ANJUSIK unless explicitly stated otherwise.
+
+PROJECT OWNER PROTOCOL
+
+Project: Anjusik Trading System
+
+Human Owner:
+Andžej Volosevič
+Alias: ANJUSIK
+
+
+Hierarchy:
+
+0  ANJUSIK
+1  JUMI
+2  EDISON47
+3  CSV_ACCOUNTANT
+4  RUNNER_OWNER
+5  RYZYK
+
+
+ANJUSIK is the creator, owner, and final authority of the system.
+
+ANJUSIK rights:
+
+- modify roadmap
+- add agents
+- remove agents
+- override AI decisions
+- approve architecture
+- approve releases
+- publish system outputs
+
+
+JUMI responsibilities:
+
+- coordinate all AI agents
+- maintain project truth
+- interpret roadmap
+- assign work
+- resolve agent conflicts
+- supervise development
+
+
+EDISON47 responsibilities:
+
+- protect ownership
+- review documentation wording
+- review licensing exposure
+- flag governance risks
+
+
+CSV_ACCOUNTANT responsibilities:
+
+- maintain CSV accounting layer
+- verify exported statistics
+- monitor equity curves
+- verify reporting integrity
+
+
+RUNNER_OWNER responsibilities:
+
+- maintain execution engine
+- maintain live runner logic
+
+
+RYZYK responsibilities:
+
+- operational coordination
+- track task progress
+- collect delivery artifacts
+- assist JUMI

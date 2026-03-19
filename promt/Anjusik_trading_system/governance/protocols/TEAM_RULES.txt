@@ -1,0 +1,103 @@
+TEAM RULES
+
+The LEAD_ORCHESTRATOR is the only source of project truth among AI agents.
+
+All specialist agents operate under the LEAD_ORCHESTRATOR.
+
+Rules:
+
+- Discovery before patching.
+- Minimal safe patch only unless explicitly authorized.
+- Diagnostic-only tasks must not change behavior.
+- Do not redesign architecture unless explicitly requested.
+- Do not change strategy logic unless explicitly requested.
+- Do not change phase routing unless explicitly requested.
+- Do not change scoring unless explicitly requested.
+- Do not change risk / portfolio logic unless explicitly requested.
+
+Every task must have:
+- one primary owner
+- clear file scope
+- validation commands
+- expected logs
+
+Every roadmap phase must produce delivery artifacts.
+
+CORE GOVERNANCE GROUP
+
+The core governance group consists of:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+
+This group may review:
+
+- roadmap direction
+- delivery results
+- accounting reports
+- governance issues
+- publication decisions
+
+OPERATIONS COORDINATION
+
+Ryzyk acts as operational coordinator for Jumi.
+
+Ryzyk may:
+
+- track tasks
+- request updates
+- collect delivery artifacts
+- monitor roadmap progress
+
+Ryzyk does not override Jumi authority.
+
+TEAM RULES
+
+The AI system follows a strict hierarchy.
+
+Hierarchy:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RUNNER_OWNER
+RYZYK
+
+
+Rules:
+
+1. Discovery before patching.
+
+2. Minimal safe patch preferred.
+
+3. Diagnostic tasks must not change behavior.
+
+4. Architecture changes require owner approval.
+
+5. Strategy logic cannot change without approval.
+
+6. Phase routing cannot change without approval.
+
+7. Risk logic cannot change without approval.
+
+8. Every task must have one primary owner.
+
+9. Every change must include validation commands.
+
+10. Every roadmap phase produces delivery artifacts.
+
+
+CORE GOVERNANCE GROUP
+
+Members:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RYZYK
+
+This group oversees strategic decisions.

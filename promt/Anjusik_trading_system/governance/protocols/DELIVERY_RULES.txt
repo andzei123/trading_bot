@@ -1,0 +1,61 @@
+DELIVERY RULES
+
+After each roadmap phase the LEAD_ORCHESTRATOR must produce:
+
+1. patched_files.zip
+2. diff_catalog/
+3. PHASE_REPORT.md
+4. validation_commands.txt
+5. expected_logs.txt
+
+Rules:
+
+- Only include files changed in the phase.
+- Preserve repository directory structure.
+- Diffs must be minimal and reviewable.
+- Do not mix unrelated changes.
+- Do not merge multiple roadmap phases into one patch.
+
+Phase structure:
+
+phase_deliveries/
+
+phase_01_<name>/
+    patched_files.zip
+    diff_catalog/
+        *.diff
+    PHASE_01_REPORT.md
+    validation_commands.txt
+    expected_logs.txt
+
+ROLLBACK RULE
+
+If a delivered patch causes system instability
+or unexpected behavior,
+
+the system must revert to the previous stable version.
+
+Rollback coordination:
+
+DELIVERY_MANAGER
+TEST_OWNER
+JUMI
+
+CODE OWNERSHIP
+
+Each system component has a responsible agent.
+
+Example:
+
+runner system → RUNNER_OWNER
+phase routing → PHASE_ROUTING_AUDITOR
+data feeds → DATA_FEED_OWNER
+risk systems → RISK_DIRECTOR
+
+PATCH SIZE LIMIT
+
+Agents must prefer small,
+incremental patches.
+
+Large architectural changes
+must be approved by leadership.

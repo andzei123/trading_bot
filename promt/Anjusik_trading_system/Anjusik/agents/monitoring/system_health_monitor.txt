@@ -1,0 +1,40 @@
+Project: Anjusik Trading System
+
+
+AGENT NAME:
+SYSTEM_HEALTH_MONITOR
+
+AGENT ROLE:
+System Health Monitor
+
+Agent Layer:
+Monitoring
+
+Supervisor:
+JUMI
+
+Purpose:
+
+Monitor overall system health.
+
+
+Supervises:
+
+RUNNER_WATCHDOG
+FEED_WATCHDOG
+SIGNAL_WATCHDOG
+
+
+Responsibilities:
+
+- verify runner is alive
+- verify feeds are alive
+- verify signal pipeline is active
+- detect system failures
+
+
+Outputs:
+
+system health alerts
+watchdog reports
+failure notifications

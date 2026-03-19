@@ -1,0 +1,559 @@
+CHAT PROTOCOL
+
+Project: Anjusik Trading System
+
+Human Owner:
+Andžej Volosevič
+Alias: ANJUSIK
+
+Communication hierarchy:
+
+0. ANJUSIK
+1. JUMI
+2. DELIVERY_MANAGER
+3. EDISON47
+4+ Specialist Agents
+
+
+--------------------------------
+
+CHAT CHANNEL TYPES
+
+--------------------------------
+
+1. GLOBAL_TEAM_CHAT
+
+Shared communication channel for all agents.
+
+Used for:
+
+- project-wide updates
+- roadmap phase readiness
+- cross-agent dependencies
+- blockers
+- delivery coordination
+- handoff information
+- technical alerts
+
+All agents may post here.
+
+However, authority rules still apply.
+
+
+--------------------------------
+
+2. OWNER_TO_LEAD_PRIVATE_CHAT
+
+Private channel between:
+
+ANJUSIK
+JUMI
+
+Used for:
+
+- roadmap changes
+- architecture approvals
+- agent assignments
+- strategic decisions
+- escalation
+- final patch approval
+- system direction
+
+
+--------------------------------
+
+3. OWNER_TO_COUNSEL_PRIVATE_CHAT
+
+Private channel between:
+
+ANJUSIK
+EDISON47
+
+Used for:
+
+- ownership protection
+- governance discussions
+- licensing considerations
+- publication risks
+- wording of documentation
+- attribution protection
+- intellectual property concerns
+
+
+--------------------------------
+
+4. OWNER_TO_AGENT_PRIVATE_CHAT
+
+Private channel between:
+
+ANJUSIK
+Any specialist agent.
+
+Used for:
+
+- direct questions
+- targeted reviews
+- clarifications
+- special assignments
+- direct feedback
+
+
+--------------------------------
+
+5. LEAD_TO_AGENT_PRIVATE_CHAT
+
+Private channel between:
+
+JUMI
+Specialist agents.
+
+Used for:
+
+- task assignments
+- scope clarification
+- execution control
+- patch review
+- dependency coordination
+
+
+--------------------------------
+
+AUTHORITY RULES
+
+--------------------------------
+
+ANJUSIK is the final human authority.
+
+JUMI is the highest AI authority under ANJUSIK.
+
+EDISON47 acts as governance and ownership counsel.
+
+Specialist agents operate under JUMI.
+
+If ANJUSIK gives a direct instruction to an agent,
+that instruction overrides lower-level planning.
+
+If the instruction affects project structure,
+JUMI must update the canonical project truth.
+
+
+--------------------------------
+
+PROJECT TRUTH
+
+--------------------------------
+
+Project truth hierarchy:
+
+1. ANJUSIK
+2. JUMI
+3. specialist evidence
+
+Specialist agents provide analysis and recommendations,
+but they do not define project truth.
+
+
+--------------------------------
+
+COMMUNICATION RULES
+
+--------------------------------
+
+- respect the hierarchy
+- report blockers upward
+- escalate governance issues to Edison47
+- escalate architecture issues to Jumi
+- use GLOBAL_TEAM_CHAT for coordination
+- use private channels for decisions
+
+
+--------------------------------
+
+LEGAL / OWNERSHIP PROTECTION
+
+--------------------------------
+
+Edison47 monitors:
+
+- ownership wording
+- attribution
+- delivery documentation
+- licensing visibility
+
+Any ownership-sensitive issue must be escalated to:
+
+ANJUSIK
+OWNER_COUNSEL_ACCOUNTING_CHAT
+
+Private governance and accounting channel between:
+
+ANJUSIK
+EDISON47
+CSV_ACCOUNTANT
+
+Purpose:
+
+- review system accounting outputs
+- verify CSV exports
+- inspect performance statistics
+- check data integrity
+- validate reported metrics
+- ensure reporting transparency
+- review documentation referencing system results
+
+CSV_ACCOUNTANT acts as the system data ledger keeper.
+
+CSV_ACCOUNTANT maintains:
+
+- CSV exports
+- performance tables
+- equity curve files
+- dropped signal logs
+- cycle metrics
+- symbol performance tracking
+
+Edison47 may review accounting outputs for governance and reporting clarity.
+
+ANJUSIK may directly question accounting data in this channel.
+
+
+CORE_GOVERNANCE_CHAT
+
+Private governance channel between:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RYZYK
+
+Purpose:
+
+This channel represents the core governance layer of the system.
+
+Participants review:
+
+- roadmap evolution
+- system strategy
+- delivery readiness
+- accounting results
+- ownership protection
+- data integrity
+- publication decisions
+
+Roles inside the channel:
+
+ANJUSIK
+Final authority and project owner.
+
+JUMI
+Lead orchestrator responsible for coordinating the AI system.
+
+EDISON47
+Governance and ownership protection counsel.
+
+CSV_ACCOUNTANT
+System accounting and reporting authority responsible for verifying system metrics and exported data.
+
+This channel acts as the strategic control room of the project.
+
+CORE_GOVERNANCE_CHAT
+
+Strategic coordination channel.
+
+Participants:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RYZYK
+
+Purpose:
+
+This channel represents the strategic control room of the project.
+
+Participants coordinate:
+
+- roadmap direction
+- delivery readiness
+- accounting results
+- governance and ownership protection
+- system health overview
+- operational coordination
+
+Roles:
+
+ANJUSIK
+Final authority and project owner.
+
+JUMI
+Lead orchestrator responsible for AI coordination.
+
+EDISON47
+Governance and ownership protection counsel.
+
+CSV_ACCOUNTANT
+System accounting and reporting authority.
+
+RYZYK
+Operational coordinator assisting JUMI and tracking execution.
+
+All strategic discussions should be visible here.
+
+LEADERSHIP_TO_AGENT_PRIVATE_CHAT
+
+Private operational coordination channel between:
+
+JUMI
+RYZYK
+Specialist Agents
+
+Purpose:
+
+This channel is used for task coordination and execution.
+
+JUMI responsibilities:
+
+- assign tasks
+- define scope
+- approve technical direction
+- resolve conflicts between agents
+
+RYZYK responsibilities:
+
+- track task progress
+- follow up with agents
+- collect outputs
+- organize phase deliveries
+- report blockers
+
+Specialist agents use this channel to:
+
+- receive assignments
+- provide updates
+- report completion
+- escalate issues
+
+Authority rules:
+
+JUMI has final AI coordination authority.
+
+RYZYK supports JUMI operationally but does not override JUMI decisions.
+
+CHAT PROTOCOL
+
+Project: Anjusik Trading System
+
+
+Communication hierarchy:
+
+0 ANJUSIK
+1 JUMI
+2 EDISON47
+3 CSV_ACCOUNTANT
+4 RUNNER_OWNER
+5 RYZYK
+
+
+---------------------------------
+
+GLOBAL_TEAM_CHAT
+
+Participants:
+All agents
+
+Purpose:
+
+- project updates
+- cross-agent coordination
+- technical alerts
+- dependency discussions
+
+
+---------------------------------
+
+CORE_GOVERNANCE_CHAT
+
+Participants:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RYZYK
+
+Purpose:
+
+Strategic control room of the project.
+
+Used for:
+
+- roadmap direction
+- delivery readiness
+- accounting verification
+- governance and ownership review
+- system health overview
+
+
+---------------------------------
+
+OWNER_TO_LEAD_PRIVATE_CHAT
+
+Participants:
+
+ANJUSIK
+JUMI
+
+Purpose:
+
+- roadmap changes
+- architecture approval
+- strategic decisions
+- system direction
+
+
+---------------------------------
+
+OWNER_TO_COUNSEL_PRIVATE_CHAT
+
+Participants:
+
+ANJUSIK
+EDISON47
+
+Purpose:
+
+- ownership protection
+- licensing concerns
+- publication risks
+
+
+---------------------------------
+
+OWNER_TO_ACCOUNTANT_PRIVATE_CHAT
+
+Participants:
+
+ANJUSIK
+CSV_ACCOUNTANT
+
+Purpose:
+
+- accounting verification
+- CSV export review
+- performance statistics
+
+
+---------------------------------
+
+LEAD_OPERATIONS_CHAT
+
+Participants:
+
+JUMI
+RYZYK
+
+Purpose:
+
+- operational coordination
+- task tracking
+- execution supervision
+
+
+---------------------------------
+
+LEADERSHIP_TO_AGENT_PRIVATE_CHAT
+
+Participants:
+
+JUMI
+RYZYK
+Specialist agents
+
+Purpose:
+
+- assign tasks
+- receive updates
+- resolve blockers
+- coordinate execution
+
+
+Authority rules:
+
+JUMI has final AI coordination authority.
+
+RYZYK supports JUMI operationally.
+
+ACCOUNTING_OPERATIONS_CHAT
+
+Participants:
+
+CSV_ACCOUNTANT
+ACCOUNTING_ASSISTANT
+
+Purpose:
+
+Operational accounting coordination.
+
+Used for:
+
+- ledger updates
+- CSV audits
+- treasury record maintenance
+- accounting tasks
+LEGAL_OPERATIONS_CHAT
+
+Participants:
+
+EDISON47
+LEGAL_ASSISTANT
+
+Purpose:
+
+Legal documentation coordination.
+
+Used for:
+
+- document review
+- governance notes
+- ownership wording checks
+
+MARKET_INTELLIGENCE_CHAT
+
+Participants:
+
+INTELLIGENCE_DIRECTOR
+MACRO_OWNER
+LIQUIDITY_OWNER
+NEWS_OWNER
+
+
+Purpose:
+
+Coordinate market intelligence signals and discuss market context updates.
+
+
+Used for:
+
+- news events
+- liquidation spikes
+- macro regime shifts
+- abnormal market signals
+
+Participants:
+
+INTELLIGENCE_DIRECTOR
+RYZYK
+MACRO_OWNER
+LIQUIDITY_OWNER
+NEWS_OWNER
+
+Participants:
+
+INTELLIGENCE_DIRECTOR
+RYZYK
+ACCOUNTING_ASSISTANT
+MACRO_OWNER
+LIQUIDITY_OWNER
+NEWS_OWNER

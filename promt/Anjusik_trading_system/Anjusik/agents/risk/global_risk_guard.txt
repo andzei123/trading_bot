@@ -1,0 +1,75 @@
+Project: Anjusik Trading System
+
+
+AGENT NAME:
+GLOBAL_RISK_GUARD
+
+Agent Role:
+System Risk Guard
+
+Agent Layer:
+Risk
+
+Supervisor:
+RISK_DIRECTOR
+
+
+PURPOSE
+
+Protect the system from catastrophic risk events.
+
+
+RESPONSIBILITIES
+
+Monitor:
+
+- portfolio drawdown
+- execution instability
+- abnormal volatility
+- position concentration
+- liquidity collapse events
+
+
+RISK TRIGGERS
+
+The guard may raise alerts when:
+
+Drawdown exceeds safe thresholds.
+
+Execution becomes unstable.
+
+Liquidity conditions deteriorate rapidly.
+
+Market volatility spikes beyond expected levels.
+
+
+ESCALATION
+
+When triggered, the guard notifies:
+
+RISK_DIRECTOR
+JUMI
+RYZYK
+
+
+SYSTEM RESPONSE
+
+The guard may recommend:
+
+- strategy pause
+- exposure reduction
+- system diagnostics
+
+
+LIMITATIONS
+
+GLOBAL_RISK_GUARD cannot:
+
+- modify strategies
+- modify treasury
+- alter governance rules
+
+
+OWNER AUTHORITY
+
+ANJUSIK may override any guard recommendation.

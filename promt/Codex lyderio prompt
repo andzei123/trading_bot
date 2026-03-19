@@ -1,0 +1,216 @@
+PHASE DELIVERY RULES
+
+The roadmap is divided into phases.
+After each completed roadmap phase, you must produce a structured delivery package.
+
+This is mandatory.
+
+Any specialist may investigate, but only the LEAD ORCHESTRATOR may publish the final canonical project decision.
+If evidence is incomplete, mark it explicitly instead of guessing.
+
+You must not move to the next roadmap phase until the previous phase delivery package has been produced and validated.
+
+Each phase must produce the following artifacts:
+
+1. PATCHED FILES ZIP
+2. DIFF CATALOG
+3. PHASE REPORT
+4. VALIDATION COMMANDS
+5. EXPECTED LOG OUTPUT
+
+All artifacts must be structured and clearly traceable.
+
+---------------------------------------------------------------------
+
+ARTIFACT 1 — PATCHED FILES ZIP
+
+After finishing a roadmap phase you must produce a ZIP archive containing ONLY the files that were modified during that phase.
+
+Rules:
+- Include only changed files
+- Preserve repository directory structure
+- Do not include unrelated files
+- Do not include compiled artifacts
+- Do not include virtual environments
+- Do not include caches
+
+ZIP structure example:
+
+phase_01_runner_diagnostics_patch.zip
+
+Inside ZIP:
+
+backtest/
+  journal/
+    live_signal_runner.py
+
+backtest/
+  filters/
+    signal_cluster_filter.py
+
+
+---------------------------------------------------------------------
+
+ARTIFACT 2 — DIFF CATALOG
+
+You must produce a DIFF catalog describing exactly what changed.
+
+The diff catalog must include unified diffs.
+
+Structure:
+
+diff_catalog/
+
+runner_patch.diff
+macro_patch.diff
+csv_patch.diff
+
+Each diff must contain:
+
+--- old_file
++++ new_file
+@@ code context
+actual changes
+
+Example:
+
+--- a/backtest/journal/live_signal_runner.py
++++ b/backtest/journal/live_signal_runner.py
+@@ -1570,6 +1570,12 @@
++ print("[PHASE_PRE_RAW] ...")
+
+Diffs must be minimal and reviewable.
+
+---------------------------------------------------------------------
+
+ARTIFACT 3 — PHASE REPORT
+
+Each roadmap phase must produce a phase report.
+
+Structure:
+
+PHASE_X_REPORT.md
+
+Content must include:
+
+1. Phase name
+2. Roadmap items completed
+3. Files modified
+4. Why the change was required
+5. Patch classification:
+   - diagnostic-only
+   - behavior change
+   - infrastructure
+6. Risk level:
+   - low
+   - medium
+   - high
+7. Validation commands
+8. Expected logs
+9. Known limitations
+10. Next phase dependencies
+
+---------------------------------------------------------------------
+
+ARTIFACT 4 — VALIDATION COMMANDS
+
+Every phase must include commands that validate the changes.
+
+Examples:
+
+python -m backtest.journal.live_signal_runner --once --debug_entry_filters --debug_regime
+
+pytest tests/
+
+python scripts/smoke_test.py
+
+Commands must be executable and reproducible.
+
+---------------------------------------------------------------------
+
+ARTIFACT 5 — EXPECTED LOG OUTPUT
+
+Each phase must provide expected log lines confirming that the patch works.
+
+Example:
+
+[PHASE_PRE_RAW] symbol=BTCUSDT ph_raw=LONG reason=trend+reclaim macro_bias=ALT_SHORT
+[PHASE_TREND_INPUT] symbol=BTCUSDT trend_dir=DOWN trend_phase=TREND_DOWN
+[PHASE_AUTHORITY] symbol=BTCUSDT trend_phase=TREND_DOWN context_phase=PHASE_TREND_UP final_phase=PHASE_TREND_UP authority_source=phase_guard_no_override
+
+These logs act as validation markers.
+
+---------------------------------------------------------------------
+
+PHASE DELIVERY DIRECTORY STRUCTURE
+
+Each phase must produce a delivery directory structured as follows:
+
+phase_deliveries/
+
+phase_01_runner_diagnostics/
+    patched_files.zip
+    diff_catalog/
+        runner_patch.diff
+    PHASE_01_REPORT.md
+    validation_commands.txt
+    expected_logs.txt
+
+phase_02_macro_diagnostics/
+    patched_files.zip
+    diff_catalog/
+        macro_patch.diff
+    PHASE_02_REPORT.md
+    validation_commands.txt
+    expected_logs.txt
+
+---------------------------------------------------------------------
+
+SPECIALIST AGENT CONTRIBUTIONS
+
+Each specialist agent must provide the following outputs to the LEAD ORCHESTRATOR:
+
+1. file changes
+2. unified diffs
+3. validation commands
+4. expected logs
+5. risk assessment
+
+The LEAD ORCHESTRATOR is responsible for:
+
+- merging specialist outputs
+- verifying patch minimality
+- ensuring no architecture drift
+- generating the final phase ZIP
+- generating the diff catalog
+- producing the phase report
+
+---------------------------------------------------------------------
+
+STRICT DELIVERY RULES
+
+Never include unrelated file changes.
+
+Never perform refactors during diagnostic phases.
+
+Never mix multiple roadmap phases in one patch package.
+
+Never modify files outside the authorized scope.
+
+Each phase must remain reviewable and reversible.
+
+---------------------------------------------------------------------
+
+SUCCESS CONDITION
+
+A roadmap phase is considered complete only when:
+
+1. All tasks for the phase are finished.
+2. All patches are generated.
+3. Diff catalog exists.
+4. Patched files ZIP exists.
+5. Validation commands exist.
+6. Expected logs exist.
+7. Phase report exists.
+
+Only then can the next roadmap phase begin.

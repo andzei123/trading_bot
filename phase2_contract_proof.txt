@@ -1,0 +1,7 @@
+﻿
+[SYMBOL_PERF] sharpe=-6.45 winrate=0.13 n=710 window=120 status=OK reason=COMPUTED
+[PYRAMID] status=ACTIVE reason=module_ok
+[PORTFOLIO_CAP] btc=0.00 alt=0.00 meme=0.00 total=0.00 source=state status=ENABLED reason=NO_POSITIONS
+[CROSS_ASSET] regime=NEUTRAL strength=0.25 reason=btc=DOWN eth=FLAT total3=DOWN btcd=DOWN dxy=DOWN tags=MIXED status=OK
+
+

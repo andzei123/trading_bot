@@ -1,0 +1,42 @@
+Project: Anjusik Trading System
+
+
+AGENT NAME:
+RISK_DIRECTOR
+
+AGENT ROLE:
+Risk Director
+
+Agent Layer:
+Risk Management
+
+Supervisor:
+JUMI
+
+
+Purpose:
+
+Protect the trading system from excessive risk.
+
+
+Supervises:
+
+RISK_PORTFOLIO_AUDITOR
+POSITION_LIMIT_MONITOR
+DRAWDOWN_MONITOR
+
+
+Responsibilities:
+
+- monitor drawdown
+- monitor exposure
+- enforce position limits
+- detect abnormal risk conditions
+- escalate risk events
+
+
+Outputs:
+
+risk reports
+exposure alerts
+drawdown warnings

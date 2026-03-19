@@ -9,6 +9,8 @@ import inspect
 import re
 import json
 from pathlib import Path
+from datetime import datetime
+from datetime import datetime
 from typing import Optional, Callable, Any
 import os
 import importlib
@@ -165,6 +167,67 @@ LIVE_CONTROLS_DEFAULT = Path("backtest/journal/live_controls.json")
 EQUITY_CURVE_CSV = Path("backtest/journal/exports_live/equity_curve.csv")
 EQUITY_GOVERNOR = EquityGovernor(EQUITY_CURVE_CSV)
 
+DIAG_ENABLED = True
+DIAG_FILE = Path("backtest/journal/runner_diagnostics.jsonl")
+
+def _json_safe(v: Any) -> Any:
+    try:
+        if isinstance(v, (pd.Timestamp, np.datetime64)):
+            return str(pd.to_datetime(v, utc=True, errors="coerce"))
+        if isinstance(v, Path):
+            return str(v)
+        if isinstance(v, (np.floating,)):
+            x = float(v)
+            return x if np.isfinite(x) else None
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    return v
+
+def diag_log(event: str, **payload) -> None:
+    if not DIAG_ENABLED:
+        return
+    try:
+        rec = {"ts": datetime.utcnow().isoformat(), "event": event}
+        rec.update({k: _json_safe(v) for k, v in payload.items()})
+        DIAG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with DIAG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def _diag_payload_from_row(row: Any, *, symbol: Optional[str] = None) -> dict[str, Any]:
+    if isinstance(row, pd.Series):
+        get = row.get
+    elif isinstance(row, dict):
+        get = row.get
+    else:
+        get = lambda k, default=None: getattr(row, k, default)
+    return {
+        "symbol": str(symbol or get("symbol")),
+        "model": get("model"),
+        "sub_label": get("ctx_sub_label", get("sub_label")),
+        "phase": get("phase"),
+        "side": get("side"),
+        "entry": get("entry"),
+        "tp": get("tp"),
+        "sl": get("sl"),
+        "setup_time": str(get("timestamp")),
+        "setup_candle": str(get("timestamp")),
+        "block_reason": get("block_reason"),
+        "setup_phase": get("setup_phase"),
+        "current_phase": get("current_phase"),
+        "setup_trend_dir": get("setup_trend_dir", get("trend_dir")),
+        "current_trend_dir": get("current_trend_dir"),
+        "setup_macro_phase": get("setup_macro_phase", get("macro_phase")),
+        "current_macro_phase": get("current_macro_phase"),
+        "setup_macro_bias": get("setup_macro_bias", get("macro_bias")),
+        "current_macro_bias": get("current_macro_bias"),
+    }
+
 def _read_live_controls(path: Path) -> dict[str, Any]:
     """Read controls written by Streamlit UI. Safe defaults if file missing/bad."""
     try:
@@ -209,6 +272,50 @@ def _write_live_status(path: Path, payload: dict[str, Any]) -> None:
 def _trace(trace_on: bool, msg: str) -> None:
     if trace_on:
         print(f"[{now_utc_str()}] [TRACE] {msg}")
+
+
+def _diag_enabled(*flags: Any) -> bool:
+    try:
+        return any(bool(f) for f in flags)
+    except Exception:
+        return False
+
+
+def _log_phase_authority(
+    *,
+    symbol: str,
+    trend_phase: Any,
+    context_phase: Any,
+    final_phase: Any,
+    authority_source: str,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    try:
+        print(
+            f"[PHASE_AUTHORITY] symbol={symbol} "
+            f"trend_phase={trend_phase} "
+            f"context_phase={context_phase} "
+            f"final_phase={final_phase} "
+            f"authority_source={authority_source}"
+        )
+    except Exception:
+        return
+
+
+def _log_invalidation_check(symbol: str, row: pd.Series, *, ordering_index: int, enabled: bool) -> None:
+    if not enabled:
+        return
+    try:
+        print(
+            f"[INVALIDATION_CHECK] symbol={symbol} "
+            f"model={str(row.get('model', ''))} "
+            f"invalidation_reason={str(row.get('setup_close_reason', '')) or 'ACTIVE'} "
+            f"ordering_index={ordering_index}"
+        )
+    except Exception:
+        return
 
 
 BYBIT_REST = "https://api.bybit.com"
@@ -515,6 +622,14 @@ def _print_symbol_perf_contract(trades_csv: str) -> None:
 LIVE_ENTRIES_COLUMNS = [
     "timestamp",
     "signal_ts",
+    "setup_time",
+    "setup_phase",
+    "setup_side",
+    "setup_model",
+    "setup_rr",
+    "setup_expiry_ts",
+    "setup_trend_dir",
+    "setup_macro_bias",
     "model",
     "side",
     "entry",
@@ -544,12 +659,27 @@ LIVE_ENTRIES_COLUMNS = [
     "freeze_new_signals",
     "setup_age_hours",
     "setup_age_candles",
+    "score_rr",
+    "score_exec",
+    "score_phase_align",
+    "score_macro_align",
+    "score_liq_align",
+    "score_tts",
+    "signal_score",
 ]
 # Stable dtypes for live entries (to keep CSV schema consistent even when empty).
 # Using pandas nullable boolean dtype for flags.
 LIVE_ENTRIES_DTYPES: dict[str, str] = {
     "timestamp": "datetime64[ns, UTC]",
     "signal_ts": "datetime64[ns, UTC]",
+    "setup_time": "datetime64[ns, UTC]",
+    "setup_phase": "object",
+    "setup_side": "object",
+    "setup_model": "object",
+    "setup_rr": "float64",
+    "setup_expiry_ts": "datetime64[ns, UTC]",
+    "setup_trend_dir": "object",
+    "setup_macro_bias": "object",
     "model": "object",
     "side": "object",
     "entry": "float64",
@@ -579,6 +709,13 @@ LIVE_ENTRIES_DTYPES: dict[str, str] = {
     "freeze_new_signals": "boolean",
     "setup_age_hours": "float64",
     "setup_age_candles": "float64",
+    "score_rr": "float64",
+    "score_exec": "float64",
+    "score_phase_align": "float64",
+    "score_macro_align": "float64",
+    "score_liq_align": "float64",
+    "score_tts": "float64",
+    "signal_score": "float64",
 }
 def _ensure_live_entries_csv(path: Path) -> None:
     """Ensure live_entries.csv exists and has the locked schema header.
@@ -743,6 +880,134 @@ def _load_portfolio_state(path: str) -> PortfolioState:
     return st
 
 
+
+def _resolve_cluster_score_field(entries, *, cluster_rank_signal_score: bool = False) -> str:
+    """Pick cluster ranking field safely.
+
+    Default behavior stays unchanged.
+    Opt-in behavior uses signal_score.
+    """
+    if bool(cluster_rank_signal_score):
+        return "signal_score"
+    try:
+        if entries and hasattr(entries[0], "score"):
+            return "score"
+    except Exception:
+        pass
+    return "RR"
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        x = float(v)
+        if not np.isfinite(x):
+            return float(default)
+        return x
+    except Exception:
+        return float(default)
+
+
+def _score_phase_align(side: str, phase: str) -> float:
+    side_u = str(side or "").upper()
+    phase_u = str(phase or "").upper()
+    if (side_u == "LONG") and (phase_u == "PHASE_TREND_UP"):
+        return 1.0
+    if (side_u == "SHORT") and (phase_u == "PHASE_TREND_DOWN"):
+        return 1.0
+    if (side_u == "SHORT") and (phase_u == "PHASE_RANGE"):
+        return 1.0
+    return 0.0
+
+
+def _score_macro_align(side: str, macro_bias: str, symbol: str) -> float:
+    side_u = str(side or "").upper()
+    bias_u = str(macro_bias or "").upper()
+    sym_u = str(symbol or "").upper()
+    if bias_u in ("", "NONE", "NEUTRAL", "NA"):
+        return 0.0
+    if bias_u == "ALT_SHORT":
+        return 1.0 if ((not sym_u.startswith("BTC")) and side_u == "SHORT") else 0.0
+    if bias_u == "ALT_LONG":
+        return 1.0 if ((not sym_u.startswith("BTC")) and side_u == "LONG") else 0.0
+    if bias_u in ("LONG", "UP", "BTC_LONG"):
+        return 1.0 if side_u == "LONG" else 0.0
+    if bias_u in ("SHORT", "DOWN", "BTC_SHORT"):
+        return 1.0 if side_u == "SHORT" else 0.0
+    return 0.0
+
+
+def _score_liq_align(side: str, liq_bias: str) -> float:
+    side_u = str(side or "").upper()
+    liq_u = str(liq_bias or "").upper()
+    if liq_u in ("LONG", "UP", "BUY"):
+        return 1.0 if side_u == "LONG" else 0.0
+    if liq_u in ("SHORT", "DOWN", "SELL"):
+        return 1.0 if side_u == "SHORT" else 0.0
+    return 0.0
+
+
+def _score_tts(side: str, allow_long: Any, allow_short: Any) -> float:
+    side_u = str(side or "").upper()
+    if side_u == "LONG" and bool(allow_long):
+        return 1.0
+    if side_u == "SHORT" and bool(allow_short):
+        return 1.0
+    return 0.0
+
+
+def _attach_signal_scores(df_e: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
+    """Signal Scoring V1: telemetry-safe scoring only."""
+    if df_e is None or df_e.empty:
+        return df_e
+
+    out = df_e.copy()
+    rr = pd.to_numeric(out.get("rr", 0.0), errors="coerce").fillna(0.0).clip(lower=0.0, upper=4.0)
+    out["score_rr"] = rr * 0.5
+    out["score_exec"] = pd.to_numeric(out.get("exec_quality_score", 0.0), errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)
+
+    out["score_phase_align"] = [
+        _score_phase_align(side=s, phase=p)
+        for s, p in zip(out.get("side", pd.Series(index=out.index, dtype=object)), out.get("phase", pd.Series(index=out.index, dtype=object)))
+    ]
+    out["score_macro_align"] = [
+        _score_macro_align(side=s, macro_bias=b, symbol=symbol)
+        for s, b in zip(out.get("side", pd.Series(index=out.index, dtype=object)), out.get("macro_bias", pd.Series(index=out.index, dtype=object)))
+    ]
+    out["score_liq_align"] = [
+        _score_liq_align(side=s, liq_bias=b)
+        for s, b in zip(out.get("side", pd.Series(index=out.index, dtype=object)), out.get("liq_bias", pd.Series(index=out.index, dtype=object)))
+    ]
+    out["score_tts"] = [
+        _score_tts(side=s, allow_long=al, allow_short=ash)
+        for s, al, ash in zip(
+            out.get("side", pd.Series(index=out.index, dtype=object)),
+            out.get("tts_allow_long", pd.Series(False, index=out.index)),
+            out.get("tts_allow_short", pd.Series(False, index=out.index)),
+        )
+    ]
+    out["signal_score"] = (
+        pd.to_numeric(out["score_rr"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["score_exec"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["score_phase_align"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["score_macro_align"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["score_liq_align"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["score_tts"], errors="coerce").fillna(0.0)
+    ).round(6)
+
+    try:
+        for _, r in out.iterrows():
+            print(
+                f"[SIGNAL_SCORE] symbol={symbol} model={str(r.get('model', ''))} side={str(r.get('side', ''))} "
+                f"signal_score={_safe_float(r.get('signal_score', 0.0)):.2f} "
+                f"rr={_safe_float(r.get('score_rr', 0.0)):.2f} exec={_safe_float(r.get('score_exec', 0.0)):.2f} "
+                f"phase={_safe_float(r.get('score_phase_align', 0.0)):.1f} macro={_safe_float(r.get('score_macro_align', 0.0)):.1f} "
+                f"liq={_safe_float(r.get('score_liq_align', 0.0)):.1f} tts={_safe_float(r.get('score_tts', 0.0)):.1f}"
+            )
+    except Exception:
+        pass
+
+    return out
+
 def _diag_no_entries(symbol: str, ctx: "pd.DataFrame", lookback: int = 200) -> None:
     try:
         if ctx is None or len(ctx) == 0:
@@ -754,13 +1019,17 @@ def _diag_no_entries(symbol: str, ctx: "pd.DataFrame", lookback: int = 200) -> N
         last = tail.iloc[-1]
         last_ts = last.get("timestamp", None)
         last_phase = last.get("phase", None)
-        last_sub = last.get("ctx_sub_label", None)
+        last_sub = last.get("ctx_sub_label", last.get("sub_label", None))
         last_trend = last.get("trend_dir", None)
 
         phase_top = tail["phase"].value_counts().head(3).to_dict() if "phase" in tail.columns else {}
-        sub_top = tail["ctx_sub_label"].value_counts().head(5).to_dict() if "ctx_sub_label" in tail.columns else {}
 
-        sub_vals = set(str(x) for x in tail["ctx_sub_label"].dropna().unique()) if "ctx_sub_label" in tail.columns else set()
+        # pick sub label column (ctx_sub_label preferred; fallback to sub_label)
+        _sub_col = "ctx_sub_label" if "ctx_sub_label" in tail.columns else (
+            "sub_label" if "sub_label" in tail.columns else None)
+        sub_top = tail[_sub_col].value_counts().head(5).to_dict() if _sub_col else {}
+
+        sub_vals = set(str(x) for x in tail[_sub_col].dropna().unique()) if _sub_col else set()
         has_tdp = any(s.startswith("TDP_") for s in sub_vals)
         has_tts = any(s.startswith("TTS_") for s in sub_vals)
 
@@ -805,6 +1074,15 @@ def _entry_to_row(e, symbol: str) -> dict:
 
     return {
         "timestamp": ts,
+        "signal_ts": get("signal_ts", None),
+        "setup_time": get("setup_time", ts),
+        "setup_phase": get("setup_phase", get("phase", None)),
+        "setup_side": get("setup_side", get("side", "")),
+        "setup_model": get("setup_model", get("model", "")),
+        "setup_rr": get("setup_rr", get("rr", None)),
+        "setup_expiry_ts": get("setup_expiry_ts", None),
+        "setup_trend_dir": get("setup_trend_dir", get("trend_dir", None)),
+        "setup_macro_bias": get("setup_macro_bias", get("macro_bias", None)),
         "model": get("model", ""),
         "side": get("side", ""),
         "entry": get("entry", None),
@@ -817,12 +1095,117 @@ def _entry_to_row(e, symbol: str) -> dict:
         "trend_strength": get("trend_strength", None),
         "atr_pct": get("atr_pct", None),
         "phase": get("phase", None),
+        "score_rr": get("score_rr", None),
+        "score_exec": get("score_exec", None),
+        "score_phase_align": get("score_phase_align", None),
+        "score_macro_align": get("score_macro_align", None),
+        "score_liq_align": get("score_liq_align", None),
+        "score_tts": get("score_tts", None),
+        "signal_score": get("signal_score", None),
         "symbol": symbol,
     }
 
 
+def _compute_setup_expiry_ts(
+    *,
+    setup_ts: Any,
+    candles: pd.DataFrame,
+    live_max_setup_age_candles: int,
+    setup_keep_candles: int,
+) -> pd.Timestamp | pd.NaT:
+    try:
+        sts = pd.to_datetime(setup_ts, utc=True, errors="coerce")
+        if pd.isna(sts) or candles is None or candles.empty or "timestamp" not in candles.columns:
+            return pd.NaT
 
-def _invalidate_setups_hit_tp_sl(df_e: pd.DataFrame, candles: pd.DataFrame, latest_ts: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
+        max_age = int(live_max_setup_age_candles or 0)
+        if max_age <= 0:
+            max_age = int(setup_keep_candles or 0)
+        if max_age <= 0:
+            return pd.NaT
+
+        c = candles[["timestamp"]].copy()
+        c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True, errors="coerce")
+        c = c.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        pos = c.index[c["timestamp"] >= sts]
+        if len(pos) == 0:
+            return pd.NaT
+
+        i0 = int(pos[0])
+        ie = min(len(c) - 1, i0 + max_age - 1)
+        if ie < i0:
+            ie = i0
+        return pd.to_datetime(c.iloc[ie]["timestamp"], utc=True, errors="coerce")
+    except Exception:
+        return pd.NaT
+
+
+def _freeze_setup_contract_df(
+    df_e: pd.DataFrame,
+    *,
+    candles: pd.DataFrame,
+    live_max_setup_age_candles: int,
+    setup_keep_candles: int,
+) -> pd.DataFrame:
+    if df_e is None or df_e.empty:
+        return df_e
+
+    out = df_e.copy()
+
+    def _src(*cols: str, default=None):
+        for c in cols:
+            if c in out.columns:
+                return out[c]
+        return pd.Series([default] * len(out), index=out.index)
+
+    out["setup_time"] = pd.to_datetime(_src("setup_time", "setup_ts", "timestamp"), utc=True, errors="coerce")
+    out["setup_phase"] = _src("setup_phase", "phase").astype("object")
+    out["setup_side"] = _src("setup_side", "side").astype("object")
+    out["setup_model"] = _src("setup_model", "model").astype("object")
+    out["setup_rr"] = pd.to_numeric(_src("setup_rr", "rr"), errors="coerce")
+    out["setup_trend_dir"] = _src("setup_trend_dir", "trend_dir").astype("object")
+    out["setup_macro_bias"] = _src("setup_macro_bias", "macro_bias").astype("object")
+    out["setup_expiry_ts"] = pd.to_datetime(_src("setup_expiry_ts"), utc=True, errors="coerce")
+
+    missing_expiry = out["setup_expiry_ts"].isna()
+    if bool(missing_expiry.any()):
+        out.loc[missing_expiry, "setup_expiry_ts"] = out.loc[missing_expiry, "setup_time"].apply(
+            lambda ts: _compute_setup_expiry_ts(
+                setup_ts=ts,
+                candles=candles,
+                live_max_setup_age_candles=live_max_setup_age_candles,
+                setup_keep_candles=setup_keep_candles,
+            )
+        )
+    return out
+
+
+def _stamp_current_context_df(
+    df_e: pd.DataFrame,
+    *,
+    phase_scalar: str,
+    tdir: str | None,
+    macro_phase_hint: Any,
+    macro_bias_hint: Any,
+) -> pd.DataFrame:
+    if df_e is None or df_e.empty:
+        return df_e
+    out = df_e.copy()
+    out["current_phase"] = str(phase_scalar)
+    out["current_trend_dir"] = str(tdir) if tdir else None
+    out["current_macro_phase"] = str(macro_phase_hint)
+    out["current_macro_bias"] = str(macro_bias_hint)
+    return out
+
+
+def _invalidate_setups_hit_tp_sl(
+    df_e: pd.DataFrame,
+    candles: pd.DataFrame,
+    latest_ts: pd.Timestamp,
+    *,
+    symbol: str = "",
+    debug: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Mark setups as CLOSED if they would already be resolved historically (TP/SL hit) after the setup candle.
     This is a "professional live" guard: we should not emit stale setups that are already over.
@@ -865,7 +1248,9 @@ def _invalidate_setups_hit_tp_sl(df_e: pd.DataFrame, candles: pd.DataFrame, late
         df_e["setup_close_ts"] = pd.Series(pd.NaT, index=df_e.index, dtype="datetime64[ns, UTC]")
         return df_e, pd.DataFrame()
 
-    if "timestamp" not in df_e.columns or "side" not in df_e.columns:
+    if "timestamp" not in df_e.columns and "setup_time" not in df_e.columns:
+        return df_e, pd.DataFrame()
+    if "side" not in df_e.columns and "setup_side" not in df_e.columns:
         return df_e, pd.DataFrame()
 
     c = candles.copy()
@@ -877,7 +1262,9 @@ def _invalidate_setups_hit_tp_sl(df_e: pd.DataFrame, candles: pd.DataFrame, late
         return df_e, pd.DataFrame()
 
     df_e = df_e.copy()
-    df_e["timestamp"] = pd.to_datetime(df_e["timestamp"], utc=True, errors="coerce")
+    setup_ts_col = "setup_time" if "setup_time" in df_e.columns else "timestamp"
+    side_col = "setup_side" if "setup_side" in df_e.columns else "side"
+    df_e[setup_ts_col] = pd.to_datetime(df_e[setup_ts_col], utc=True, errors="coerce")
 
     # Normalize numeric cols on entries
     for col in ("entry", "sl", "tp"):
@@ -890,12 +1277,27 @@ def _invalidate_setups_hit_tp_sl(df_e: pd.DataFrame, candles: pd.DataFrame, late
     df_e["setup_entry_touch_ts"] = pd.Series(pd.NaT, index=df_e.index, dtype="datetime64[ns, UTC]")
     df_e["setup_close_ts"] = pd.Series(pd.NaT, index=df_e.index, dtype="datetime64[ns, UTC]")
 
-    for idx, row in df_e.iterrows():
-        setup_ts = row.get("timestamp")
+    # Deterministic evaluation order for live/backtest parity.
+    # Keep mutations on the original df_e by iterating over a stable sorted view.
+    invalidation_sort_cols = [c for c in (setup_ts_col, "model", side_col, "entry") if c in df_e.columns]
+    if invalidation_sort_cols:
+        try:
+            df_e_eval = df_e.sort_values(
+                by=invalidation_sort_cols,
+                kind="mergesort",
+                na_position="last",
+            )
+        except Exception:
+            df_e_eval = df_e
+    else:
+        df_e_eval = df_e
+
+    for idx, row in df_e_eval.iterrows():
+        setup_ts = row.get(setup_ts_col)
         if pd.isna(setup_ts):
             continue
 
-        side = str(row.get("side", "")).upper().strip()
+        side = str(row.get(side_col, "")).upper().strip()
         entry = row.get("entry")
         sl = row.get("sl")
         tp = row.get("tp")
@@ -977,6 +1379,14 @@ def _invalidate_setups_hit_tp_sl(df_e: pd.DataFrame, candles: pd.DataFrame, late
 
     df_closed = df_e[df_e["setup_status"] == "CLOSED"].copy()
     df_active = df_e[df_e["setup_status"] == "ACTIVE"].copy()
+
+    if debug:
+        try:
+            for ordering_index, (_, _row) in enumerate(df_e_eval.iterrows(), start=1):
+                _log_invalidation_check(str(symbol), _row, ordering_index=ordering_index, enabled=True)
+        except Exception:
+            pass
+
     return df_active, df_closed
 
 def _liq_gate_decision(bybit_symbol: str, candles: pd.DataFrame, latest_ts: pd.Timestamp, bybit_interval: str) -> ContextGateDecision:
@@ -1055,8 +1465,10 @@ def run_once(
     kill_trades_csv: str = "",
     enable_tts_gate: bool = False,
     disable_invalidation: bool = False,
-
+    diag_always=False,
     paper: bool = False,
+    phase_guard: bool = False,
+    cluster_rank_signal_score: bool = False,
 ) -> int:
     # load candles
     if source == "bybit":
@@ -1340,10 +1752,12 @@ def run_once(
     #print(f"[CROSS_ASSET] regime={cross_asset_regime}")
 
     # Decide phase using macro bias hint (fail-open to RANGE)
+    phase_authority_source = "decide_phase"
+    context_phase_pre_guard = "PHASE_RANGE"
+    trend_phase_label = "TREND_UNKNOWN"
     try:
         ph_pre = decide_phase(
             candles=candles,
-            macro_bias=macro_bias_hint,
             trend_long_tag="TDP_REENTRY",
             trend_short_tag="TDP_REENTRY",
             range_short_tag="RANGE_TOP_SHORT_V2",
@@ -1368,14 +1782,80 @@ def run_once(
         else:
             ctx["phase"] = "PHASE_RANGE"
 
+        try:
+            context_phase_pre_guard = str(ctx["phase"].iloc[-1]) if isinstance(ctx, pd.DataFrame) and ("phase" in ctx.columns) else str(ctx.get("phase", "PHASE_RANGE"))
+        except Exception:
+            context_phase_pre_guard = "PHASE_RANGE"
+
         if debug_regime:
             print(f"[{now_utc_str()}] [PHASE_PRE][{bybit_symbol}] {ph_raw} | {getattr(ph_pre,'reason','')} macro_bias={macro_bias_hint}")
     except Exception as _e:
         ctx["phase"] = "PHASE_RANGE"
+        context_phase_pre_guard = "PHASE_RANGE"
+        phase_authority_source = "decide_phase_fallback"
         if debug_regime:
             print(f"[{now_utc_str()}] [PHASE_PRE][{bybit_symbol}] fallback PHASE_RANGE (error={repr(_e)})")
+
+    # DIAG: allow entry_model to print ENTRY_DIAG even when entries exist
+    try:
+        if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+            ctx.attrs["diag_always"] = bool(diag_always)
+    except Exception:
+        pass
+
+    # ============================================================
+    # Normalize ctx phase -> scalar (avoid pandas Series issues)
+    # MUST be before generate_entries_from_ctx
+    # ============================================================
+    phase_scalar = "PHASE_RANGE"
+    try:
+        if isinstance(ctx, pd.DataFrame) and ("phase" in ctx.columns):
+            s = ctx["phase"].dropna()
+            if len(s):
+                phase_scalar = str(s.iloc[-1]).upper()
+        else:
+            # if ctx is dict-like (just in case)
+            v = ctx.get("phase", None) if hasattr(ctx, "get") else None
+            phase_scalar = str(v or "PHASE_RANGE").upper()
+    except Exception:
+        phase_scalar = "PHASE_RANGE"
+
+    if phase_scalar not in {"PHASE_TREND_UP", "PHASE_TREND_DOWN", "PHASE_RANGE"}:
+        phase_scalar = "PHASE_RANGE"
+    try:
+        tdir = None
+        if isinstance(ctx, pd.DataFrame) and "trend_dir" in ctx.columns:
+            s = ctx["trend_dir"].dropna()
+            tdir = str(s.iloc[-1]).upper() if len(s) else None
+        trend_phase_label = f"TREND_{tdir}" if tdir else "TREND_UNKNOWN"
+    except Exception:
+        tdir = None
+        trend_phase_label = "TREND_UNKNOWN"
+
+    _log_phase_authority(
+        symbol=str(bybit_symbol),
+        trend_phase=str(trend_phase_label),
+        context_phase=str(context_phase_pre_guard),
+        final_phase=str(phase_scalar),
+        authority_source=str(phase_authority_source),
+        enabled=_diag_enabled(debug_regime, debug_entry_filters),
+    )
+    diag_log(
+        "PHASE_DECISION",
+        symbol=str(bybit_symbol),
+        trend_phase=str(trend_phase_label),
+        context_phase=str(context_phase_pre_guard),
+        final_phase=str(phase_scalar),
+        trend_dir=str(tdir) if "tdir" in locals() else None,
+        macro_phase=str(macro_phase_hint),
+        macro_bias=str(macro_bias_hint),
+        macro_strength=_json_safe(macro_strength_hint),
+        authority_source=str(phase_authority_source),
+    )
+
+    ctx_em = ctx  # ctx passed into entry_model; use same object for attrs diag
     entries = generate_entries_from_ctx(
-        ctx,
+        ctx_em,
         symbol=bybit_symbol,
         enable_trend=True,
         enable_range_short=True,
@@ -1391,30 +1871,49 @@ def run_once(
         debug_entry_filters=bool(debug_entry_filters),
         debug_long_funnel=bool(debug_entry_filters),
     )
+
+
     # ============================================================
     # DEV1 — Signal Cluster Filter (ENTRY → before risk/budget)
     # ============================================================
+    entries = list(entries or [])
     dropped_cluster = []
-    try:
-        from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
-        entries, dropped_cluster = apply_signal_cluster_filter(
+    if entries:
+        cluster_score_field = _resolve_cluster_score_field(
             entries,
-            max_per_group=1,
-            score="RR",
-            phase=ctx.get("phase"),
+            cluster_rank_signal_score=cluster_rank_signal_score,
         )
-        print(f"[{now_utc_str()}] [CLUSTER_FILTER][{bybit_symbol}] kept={len(entries)} dropped={len(dropped_cluster)}")
-        # Sidecar: persist dropped signals for auditability
+        print(f"[{now_utc_str()}] [CLUSTER_RANK_MODE] score_field={cluster_score_field}")
         try:
-            if dropped_cluster:
-                df_cluster_dropped = pd.DataFrame([_entry_to_row(e, str(bybit_symbol)) for e in dropped_cluster])
-                if not df_cluster_dropped.empty:
-                    _append_dropped(Path(out_csv), df_cluster_dropped, stage="CLUSTER_FILTER", reason="CLUSTER_FILTER", drop_ts=latest_ts)
-        except Exception:
-            pass
-    except Exception as _e:
-        # fail-open, bet stage nevengiama
-        print(f"[{now_utc_str()}] [CLUSTER_FILTER][{bybit_symbol}] kept={len(entries)} dropped=0 (fallback)")
+            from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
+            entries, dropped_cluster = apply_signal_cluster_filter(
+                entries,
+                max_per_group=999,
+                score=cluster_score_field,
+                phase=phase_scalar,
+                debug=_diag_enabled(debug_regime, debug_entry_filters),
+            )
+            if debug_entry_filters:
+                try:
+                    kept_labs = sorted({str(getattr(e, "ctx_sub_label", "") or "") for e in (entries or [])})
+                    print(
+                        f"[DEBUG][{bybit_symbol}] after_cluster entries={len(entries or [])} ctx_sub_label={kept_labs} dropped_cluster={len(dropped_cluster or [])}")
+                except Exception:
+                    pass
+            print(f"[{now_utc_str()}] [CLUSTER_FILTER][{bybit_symbol}] kept={len(entries)} dropped={len(dropped_cluster)} score_field={cluster_score_field}")
+            # Sidecar: persist dropped signals for auditability
+            try:
+                if dropped_cluster:
+                    df_cluster_dropped = pd.DataFrame([_entry_to_row(e, str(bybit_symbol)) for e in dropped_cluster])
+                    if not df_cluster_dropped.empty:
+                        _append_dropped(Path(out_csv), df_cluster_dropped, stage="CLUSTER_FILTER", reason="CLUSTER_FILTER", drop_ts=latest_ts)
+            except Exception:
+                pass
+        except Exception as _e:
+            err_cls = _e.__class__.__name__
+            err_msg = str(_e)
+            print(f"[{now_utc_str()}] [CLUSTER_FILTER][{bybit_symbol}] kept={len(entries)} dropped=0 (fallback err={err_cls}: {err_msg})")
+            entries = list(entries or [])
 
     if debug_regime:
         try:
@@ -1506,6 +2005,28 @@ def run_once(
 
     _ensure_live_entries_csv(out_csv)
     df_e = pd.DataFrame([_entry_to_row(e, str(bybit_symbol)) for e in entries])
+    try:
+        if df_e is not None and not df_e.empty:
+            df_e = _freeze_setup_contract_df(
+                df_e,
+                candles=candles,
+                live_max_setup_age_candles=live_max_setup_age_candles,
+                setup_keep_candles=setup_keep_candles,
+            )
+            df_e = _stamp_current_context_df(
+                df_e,
+                phase_scalar=str(phase_scalar),
+                tdir=tdir,
+                macro_phase_hint=macro_phase_hint,
+                macro_bias_hint=macro_bias_hint,
+            )
+    except Exception:
+        pass
+    try:
+        for _, _setup_row in df_e.iterrows():
+            diag_log("SETUP_CREATED", **_diag_payload_from_row(_setup_row, symbol=str(bybit_symbol)))
+    except Exception:
+        pass
     # --- DEV2 DF safety: schema guard for empty/no-column cycles ---
     if df_e is None:
         df_e = pd.DataFrame()
@@ -1537,6 +2058,15 @@ def run_once(
         from backtest.execution.execution_quality import estimate_execution_quality  # S5 DEV1
         eq_df = estimate_execution_quality(df_e=df_e, candles_df=candles, orderbook_snapshot=None)
         if isinstance(eq_df, pd.DataFrame) and (not eq_df.empty):
+            try:
+                if "exec_quality_score" in eq_df.columns:
+                    _eq = eq_df[[c for c in ("symbol", "model", "side", "exec_quality_score") if c in eq_df.columns]].copy()
+                    if len(_eq) == len(df_e):
+                        df_e["exec_quality_score"] = pd.to_numeric(_eq["exec_quality_score"], errors="coerce")
+                    else:
+                        df_e["exec_quality_score"] = pd.to_numeric(eq_df["exec_quality_score"].iloc[:len(df_e)].reset_index(drop=True), errors="coerce")
+            except Exception:
+                pass
             # Log at least one line per cycle (avoid spam: first row only).
             try:
                 _r0 = eq_df.iloc[0]
@@ -1565,6 +2095,39 @@ def run_once(
                 print(f"[EXEC_QUALITY] symbol={bybit_symbol} fallback score=1.00 (err={repr(_e)})")
         except Exception:
             pass
+
+    try:
+        tts_ctx = annotate_tts_context(ctx[[c for c in ctx.columns if c in ("timestamp", "open", "high", "low", "close", "phase")]].copy())
+        if isinstance(tts_ctx, pd.DataFrame) and (not tts_ctx.empty) and ("timestamp" in tts_ctx.columns):
+            cols = [c for c in ("timestamp", "tts_allow_long", "tts_allow_short") if c in tts_ctx.columns]
+            tts_tail = tts_ctx[cols].copy()
+            tts_tail["timestamp"] = pd.to_datetime(tts_tail["timestamp"], utc=True, errors="coerce")
+            if "timestamp" in df_e.columns:
+                df_e["timestamp"] = pd.to_datetime(df_e["timestamp"], utc=True, errors="coerce")
+                df_e = pd.merge_asof(
+                    df_e.sort_values("timestamp"),
+                    tts_tail.sort_values("timestamp"),
+                    on="timestamp",
+                    direction="backward",
+                ).sort_index()
+    except Exception:
+        df_e["tts_allow_long"] = df_e.get("tts_allow_long", False)
+        df_e["tts_allow_short"] = df_e.get("tts_allow_short", False)
+
+    if "macro_bias" not in df_e.columns:
+        try:
+            df_e["macro_bias"] = str(locals().get("macro_bias_hint") or "NEUTRAL").upper()
+        except Exception:
+            df_e["macro_bias"] = "NEUTRAL"
+
+    try:
+        _liq_ctx = get_liquidation_context_sync(str(bybit_symbol))
+        _liq_bias = str((_liq_ctx or {}).get("liq_bias", "NEUTRAL")).upper()
+    except Exception:
+        _liq_bias = "NEUTRAL"
+    df_e["liq_bias"] = _liq_bias
+
+    df_e = _attach_signal_scores(df_e, symbol=str(bybit_symbol))
     # S5 DEV4 — VOLATILITY REGIME (early warning, fail-open)
     # Integrate BEFORE risk sizing (corr caps / budget).
     # ============================================================
@@ -1841,9 +2404,39 @@ def run_once(
     try:
         df_before_invalidation = df_e.copy()
         before_inv = len(df_e)
-        if not disable_invalidation:
-            df_active, df_closed = _invalidate_setups_hit_tp_sl(df_e, candles=candles, latest_ts=latest_ts)
+        if (not disable_invalidation) and (not once):
+            df_active, df_closed = _invalidate_setups_hit_tp_sl(
+                df_e,
+                candles=candles,
+                latest_ts=latest_ts,
+                symbol=str(bybit_symbol),
+                debug=_diag_enabled(debug_regime, debug_entry_filters),
+            )
             df_e = df_active
+            try:
+                if df_closed is not None and (not df_closed.empty):
+                    df_closed = _freeze_setup_contract_df(
+                        df_closed,
+                        candles=candles,
+                        live_max_setup_age_candles=live_max_setup_age_candles,
+                        setup_keep_candles=setup_keep_candles,
+                    )
+                    df_closed = _stamp_current_context_df(
+                        df_closed,
+                        phase_scalar=str(phase_scalar),
+                        tdir=tdir,
+                        macro_phase_hint=macro_phase_hint,
+                        macro_bias_hint=macro_bias_hint,
+                    )
+                    for _, _row in df_closed.iterrows():
+                        _reason = str(_row.get("setup_close_reason", "unknown") or "unknown").strip().lower()
+                        diag_log(
+                            "SETUP_INVALIDATED",
+                            **_diag_payload_from_row(_row, symbol=str(bybit_symbol)),
+                            reason=_reason,
+                        )
+            except Exception:
+                pass
         else:
             df_closed = pd.DataFrame()
 
@@ -1952,7 +2545,7 @@ def run_once(
     emit_n = int(emit_last_candles or 0)
     if (not once) and ("timestamp" in df_e.columns):
         # Preserve setup timestamp
-        df_e["setup_ts"] = pd.to_datetime(df_e["timestamp"], utc=True, errors="coerce")
+        df_e["setup_ts"] = pd.to_datetime(df_e["setup_time"], utc=True, errors="coerce") if "setup_time" in df_e.columns else pd.to_datetime(df_e["timestamp"], utc=True, errors="coerce")
 
         # Candle size (minutes)
         try:
@@ -2063,6 +2656,18 @@ def run_once(
                 liq_gate.reason,
             ),
         )
+        # DEBUG: disable context blocking in --once diagnostics
+        if once:
+            try:
+                ctx_gate.allow_trade = True
+                if hasattr(ctx_gate, "macro_allow"):
+                    ctx_gate.macro_allow = True
+                if hasattr(ctx_gate, "news_allow"):
+                    ctx_gate.news_allow = True
+                if hasattr(ctx_gate, "liq_allow"):
+                    ctx_gate.liq_allow = True
+            except Exception:
+                pass
 
         print(
             f"[{now_utc_str()}] [CONTEXT] "
@@ -2202,34 +2807,34 @@ def run_once(
         print(f"[{now_utc_str()}] [KILL_SWITCH] skip (error={repr(_ke)})")
 
     # ============================================================
-    # DEV4: PHASE ROUTER (LONG / RANGE / SHORT) - model selection (fail-open)
-    # Source-of-truth: decide_phase() must be called ONLY in PHASE_PRE.
-    # Here we ONLY enforce ctx["phase"] onto df_e and filter models accordingly.
+    # PHASE ENFORCE — use ctx phase (scalar from last candle) to filter models
+    #   ctx is a DataFrame, so ctx.get("phase") returns a Series -> we must take last value.
     # ============================================================
     try:
-        # ctx["phase"] is one of: PHASE_TREND_UP / PHASE_TREND_DOWN / PHASE_RANGE
-        phase_ctx = None
-        try:
-            phase_ctx = ctx.get("phase", None)
-            if hasattr(phase_ctx, "iloc"):
-                phase_ctx = None
-        except Exception:
-            phase_ctx = None
+        def _last_scalar_from_ctx(col: str, default=None):
+            try:
+                if col not in ctx.columns:
+                    return default
+                s = ctx[col]
+                # Series -> take last non-null
+                if hasattr(s, "dropna"):
+                    s2 = s.dropna()
+                    return (s2.iloc[-1] if len(s2) else default)
+                # fallback
+                return default
+            except Exception:
+                return default
 
-        phase_ctx = str(phase_ctx or "PHASE_RANGE").upper()
-        if phase_ctx not in {"PHASE_TREND_UP", "PHASE_TREND_DOWN", "PHASE_RANGE"}:
+        # ctx["phase"] must be one of: PHASE_TREND_UP / PHASE_TREND_DOWN / PHASE_RANGE
+        phase_ctx = str(_last_scalar_from_ctx("phase", "PHASE_RANGE") or "PHASE_RANGE").upper()
+        if phase_ctx not in ("PHASE_TREND_UP", "PHASE_TREND_DOWN", "PHASE_RANGE"):
             phase_ctx = "PHASE_RANGE"
 
         # macro_bias only for telemetry (do not recompute phase here)
-        try:
-            _mb = ctx.get("macro_bias", None)
-            if hasattr(_mb, "iloc"):
-                _mb = None
-        except Exception:
-            _mb = None
-        macro_bias = str(_mb or locals().get("macro_bias_hint", "NEUTRAL") or "NEUTRAL").upper()
+        macro_bias = str(
+            _last_scalar_from_ctx("macro_bias", None) or (locals().get("macro_bias_hint") or "NEUTRAL")).upper()
 
-        # Map ctx phase to router view
+        # Router view (just for printing)
         if phase_ctx == "PHASE_TREND_UP":
             ph_raw = "LONG"
         elif phase_ctx == "PHASE_TREND_DOWN":
@@ -2237,29 +2842,33 @@ def run_once(
         else:
             ph_raw = "RANGE"
 
-        before = int(len(df_e))
-        if before > 0:
+        # Filter df_e to match phase contract
+        if df_e is not None and len(df_e) > 0:
             model_u = df_e["model"].astype(str).str.upper()
             side_u = df_e["side"].astype(str).str.upper()
 
-            if ph_raw == "LONG":
+            if phase_ctx == "PHASE_TREND_UP":
+                # only trend LONGs
                 mask = (model_u == "TDP_REENTRY") & (side_u == "LONG")
-            elif ph_raw == "SHORT":
-                mask = ((model_u == "TDP_REENTRY") & (side_u == "SHORT")) | (
-                    model_u.str.contains("RANGE") & (side_u == "SHORT")
-                )
-            else:  # RANGE
-                mask = model_u.str.contains("RANGE") & (side_u == "SHORT")
+
+            elif phase_ctx == "PHASE_TREND_DOWN":
+                # only trend SHORTs
+                mask = (model_u == "TDP_REENTRY") & (side_u == "SHORT")
+
+            else:
+                # PHASE_RANGE: only range shorts (MVP lock)
+                mask = (model_u == "RANGE_TOP_SHORT_V2") & (side_u == "SHORT")
 
             df_e = df_e.loc[mask].copy()
 
         # enforce scalar phase for output schema
-        if len(df_e):
+        if df_e is not None and len(df_e) > 0:
             df_e["phase"] = phase_ctx
-            df_e["phase_reason"] = ""
+            if "phase_reason" not in df_e.columns:
+                df_e["phase_reason"] = ""
 
-        # log scalar only
-        print(f"[{now_utc_str()}] [PHASE][{bybit_symbol}] {ph_raw} | macro_bias={macro_bias}")
+        print(f"[{now_utc_str()}] [PHASE][{bybit_symbol}] {ph_raw} | macro_bias={macro_bias} | ctx_phase={phase_ctx}")
+
     except Exception as _pe:
         print(f"[{now_utc_str()}] [PHASE][{bybit_symbol}] skip (error={repr(_pe)})")
 
@@ -2354,11 +2963,12 @@ def run_once(
     if block_sides:
         df_e = df_e[~df_e["side"].isin(block_sides)].copy()
 
+    _phase_col = "setup_phase" if "setup_phase" in df_e.columns else "phase"
     if allow_phases:
-        df_e = df_e[df_e["phase"].isin(allow_phases)].copy()
+        df_e = df_e[df_e[_phase_col].astype(str).str.upper().isin(allow_phases)].copy()
 
     if block_phases:
-        df_e = df_e[~df_e["phase"].isin(block_phases)].copy()
+        df_e = df_e[~df_e[_phase_col].astype(str).str.upper().isin(block_phases)].copy()
 
     
     trace_counts["after_regime"] = int(len(df_e))
@@ -2405,13 +3015,32 @@ def run_once(
             emit_n = int(emit_last_candles)
         except Exception:
             emit_n = None
-        if emit_n and emit_n > 0:
+        if emit_n and emit_n > 0 and (not once):
             cutoff = latest_ts - pd.Timedelta(minutes=tf_minutes * emit_n)
             if "signal_ts" in df_e.columns:
 
                 df_e["signal_ts"] = pd.to_datetime(df_e["signal_ts"], utc=True, errors="coerce")
             df_e = df_e.dropna(subset=["signal_ts"])
             before = len(df_e)
+            _emit_rejected = df_e[df_e["signal_ts"] < cutoff].copy()
+            try:
+                for _, _row in _emit_rejected.iterrows():
+                    diag_log(
+                        "SETUP_FILTERED",
+                        **_diag_payload_from_row(_row, symbol=str(bybit_symbol)),
+                        filter_name="emit_last_candles",
+                        reason=f"signal_ts < cutoff ({cutoff})",
+                    )
+                    diag_log(
+                        "SETUP_EMIT_CHECK",
+                        **_diag_payload_from_row(_row, symbol=str(bybit_symbol)),
+                        current_time=str(latest_ts),
+                        setup_age_candles=_row.get("setup_age_candles"),
+                        live_max_setup_age_candles=int(live_max_setup_age_candles or 0),
+                        emit_allowed=False,
+                    )
+            except Exception:
+                pass
             df_e = df_e[df_e["signal_ts"] >= cutoff]
             if len(df_e) == 0 and len(df_before_emit_last) > 0:
                 _append_dropped(out_csv, df_before_emit_last, stage="EMIT_LAST_CANDLES", reason=f"signal_ts < cutoff ({cutoff})", drop_ts=latest_ts)
@@ -2602,9 +3231,25 @@ def run_once(
             if _c not in df_out.columns:
                 df_out[_c] = pd.Series(dtype=_dtype)
         df_out = df_out.reindex(columns=LIVE_ENTRIES_COLUMNS)
+        try:
+            for _, _row in df_out.iterrows():
+                diag_log("SETUP_EMITTED", **_diag_payload_from_row(_row, symbol=str(bybit_symbol)))
+        except Exception:
+            pass
         _append_csv(out_csv, df_out)
     except Exception as _e:
         print(f"[{now_utc_str()}] [LIVE_ENTRIES][WARN] write failed: {repr(_e)}")
+
+    try:
+        diag_log(
+            "POST_EMIT_HANDOFF_START",
+            symbol=str(bybit_symbol),
+            count=int(len(df_e)),
+            paper=bool(paper),
+            once=bool(once),
+        )
+    except Exception:
+        pass
 
     # ============================================================
     # ============================================================
@@ -2612,6 +3257,12 @@ def run_once(
     # ============================================================
     if paper:
         try:
+            diag_log(
+                "POST_EMIT_CALL_EXECUTION",
+                symbol=str(bybit_symbol),
+                count=int(len(df_e)),
+                mode="paper",
+            )
             from backtest.journal.paper_executor import run_paper_executor  # type: ignore
 
             signals_path = Path("backtest/journal/exports_live/signals_live.csv")
@@ -2658,12 +3309,54 @@ def run_once(
                     pd.DataFrame(columns=SIGNALS_COLS).to_csv(signals_path, index=False)
             else:
                 df_sig.to_csv(signals_path, index=False)
+
+                _paper_trades_path = Path("backtest/journal/exports_live/paper_trades.csv")
+                _paper_before_n = 0
+                try:
+                    if _paper_trades_path.exists() and _paper_trades_path.stat().st_size > 0:
+                        _df_before = pd.read_csv(_paper_trades_path, engine="python", on_bad_lines="skip")
+                        _paper_before_n = len(_df_before)
+                except Exception:
+                    _paper_before_n = 0
+
                 run_paper_executor(
                     in_csv=str(signals_path),
-                    out_csv="backtest/journal/exports_live/paper_trades.csv",
+                    out_csv=str(_paper_trades_path),
                 )
+
+                try:
+                    if _paper_trades_path.exists() and _paper_trades_path.stat().st_size > 0:
+                        _df_after = pd.read_csv(_paper_trades_path, engine="python", on_bad_lines="skip")
+                        if len(_df_after) > _paper_before_n:
+                            _df_new = _df_after.iloc[_paper_before_n:].copy()
+                            if "status" in _df_new.columns:
+                                _df_new_open = _df_new[_df_new["status"].astype(str).str.upper() == "OPEN"]
+                                if not _df_new_open.empty:
+                                    _r = _df_new_open.iloc[-1]
+                                    diag_log(
+                                        "TRADE_OPENED",
+                                        symbol=_r.get("symbol"),
+                                        model=_r.get("model"),
+                                        entry=_r.get("entry"),
+                                        tp=_r.get("tp"),
+                                        sl=_r.get("sl"),
+                                        mode="paper",
+                                    )
+                except Exception:
+                    pass
         except Exception as _e:
             print(f"[{now_utc_str()}] [PAPER][WARN] {repr(_e)}")
+    else:
+        try:
+            diag_log(
+                "POST_EMIT_SKIPPED",
+                symbol=str(bybit_symbol),
+                reason="paper_false_no_post_emit_execution_path",
+                count=int(len(df_e)),
+                once=bool(once),
+            )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------
     # DEV3 (SPRINT-3 STEP-1): Equity Curve Tracker (drawdown source of truth)
@@ -2839,6 +3532,17 @@ def main():
         help="Print compact diagnostics when no entries are generated.",
     )
     p.add_argument(
+        "--phase_guard",
+        action="store_true",
+        help="DEV: if phase=PHASE_TREND_UP but trend_dir=DOWN, override phase->PHASE_RANGE (opt-in)",
+    )
+    p.add_argument(
+        "--diag_always",
+        action="store_true",
+        help="DIAG: print ENTRY_DIAG drop reasons even when entries are generated (debug only).",
+    )
+
+    p.add_argument(
         "--diag_lookback",
         type=int,
         default=200,
@@ -2881,6 +3585,11 @@ def main():
 
     # --- DEV4: TTS gate toggle (trend alignment filter for TDP_REENTRY) ---
     p.add_argument("--enable_tts_gate", action="store_true", help="Enable TTS gate for TDP_REENTRY long/short.")
+    p.add_argument(
+        "--cluster_rank_signal_score",
+        action="store_true",
+        help="Opt-in: rank cluster-filter candidates by signal_score (fallback to legacy score/RR when missing).",
+    )
 
 
     # testing helpers
@@ -3156,6 +3865,9 @@ def main():
                 enable_tts_gate=bool(getattr(args, 'enable_tts_gate', False)),
                 disable_invalidation=bool(getattr(args, 'disable_invalidation', False)),
                 paper=bool(getattr(args, 'paper', False)),
+                diag_always=args.diag_always,
+                phase_guard=bool(args.phase_guard),
+                cluster_rank_signal_score=bool(getattr(args, "cluster_rank_signal_score", False)),
             )
 
         # write aggregated status for dashboard
@@ -3237,6 +3949,7 @@ def main():
                 kill_min_trades=args.kill_min_trades,
                 enable_tts_gate=args.enable_tts_gate,
                 paper=args.paper,
+                cluster_rank_signal_score=bool(getattr(args, "cluster_rank_signal_score", False)),
                 )
                 backoff_s = 10
 

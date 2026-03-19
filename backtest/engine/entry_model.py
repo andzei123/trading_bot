@@ -13,6 +13,31 @@ from backtest.journal.gates import allow_entry, GateConfig  # palikta dėl suder
 ENABLE_TTS_RETEST = False  # keep OFF until TTS logic is validated
 
 # ============================================================
+# ENTRY_DIAG (DEV-1)
+# Explainable drop diagnostics for KPI_VALIDATION.
+# Active only when debug_entry_filters=True; does not change strategy logic.
+# Reasons: IMPULSE_TOO_SMALL, TREND_MISMATCH, RETEST_FAIL, RR_TOO_LOW, SL_INVALID
+# ============================================================
+def _entry_diag_bump(ctx: pd.DataFrame, reason: str, n: int = 1) -> None:
+    """Increment per-symbol entry drop diagnostics counter.
+
+    Stored in ctx.attrs["_entry_diag"] as dict[str, int].
+    """
+    try:
+        if ctx is None:
+            return
+        if not hasattr(ctx, "attrs") or not isinstance(ctx.attrs, dict):
+            return
+        d = ctx.attrs.get("_entry_diag")
+        if not isinstance(d, dict):
+            d = {}
+            ctx.attrs["_entry_diag"] = d
+        d[reason] = int(d.get(reason, 0)) + int(n)
+    except Exception:
+        return
+
+
+# ============================================================
 # DEV1 — Regime Drift weighting (SPRINT-3.3)
 # Applies trend_weight/range_weight to entry scores.
 # trend_weight/range_weight are expected via ctx.attrs or ctx columns.
@@ -50,6 +75,12 @@ def _apply_regime_drift_weights(entries: list[Entry], ctx: pd.DataFrame) -> list
             e.score = float(rr0) * float(rw)
         else:
             e.score = float(rr0)
+
+        # Signal Scoring V1 base: RR-only pre-runner component.
+        # Other components are attached later in live_signal_runner once
+        # execution / macro / liquidation / TTS context is available.
+        e.score_rr = max(0.0, min(4.0, float(rr0))) * 0.5
+        e.signal_score = float(e.score_rr)
     return entries
 
 
@@ -65,6 +96,7 @@ class Entry:
     entry: float
     sl: float
     tp: float
+    symbol: str = ""
     meta: str = ""
     ctx_sub_label: Optional[str] = None   # "TDP_TOP"/"TDP_BOT"/"TTS_UP"/"TTS_DN"
 
@@ -76,6 +108,15 @@ class Entry:
     phase: Optional[str] = None
     # --- scoring / ranking (used by runner for drift weighting + clustering) ---
     score: float = 0.0
+
+    # --- Signal Scoring V1 (telemetry-safe; does not change strategy rules) ---
+    score_rr: float = 0.0
+    score_exec: float = 0.0
+    score_phase_align: float = 0.0
+    score_macro_align: float = 0.0
+    score_liq_align: float = 0.0
+    score_tts: float = 0.0
+    signal_score: float = 0.0
 
 
 # -----------------------------
@@ -437,7 +478,16 @@ def generate_trend_entries(
     # TDP SHORT (trend continuation)
     # =================================================
     dev_up_recent = c["dev_up"].fillna(False).astype(bool).rolling(tdp_dev_lookback).max().fillna(False).astype(bool)
-
+    # ENTRY_DIAG: trend/phase mismatch (TDP_TOP exists but phase is not TREND_DOWN)
+    if debug_entry_filters:
+        try:
+            base_lbl = ((c["sub_label"] == "TDP_TOP") & dev_up_recent).fillna(False)
+            mismatch = (base_lbl & (c["phase"] != "PHASE_TREND_DOWN")).fillna(False)
+            n_mismatch = int(mismatch.sum())
+            if n_mismatch > 0:
+                _entry_diag_bump(ctx, "TREND_MISMATCH", n_mismatch)
+        except Exception:
+            pass
     reentry_short = (
             (c["sub_label"] == "TDP_TOP")
             & dev_up_recent
@@ -448,6 +498,16 @@ def generate_trend_entries(
     if require_impulse_before_tdp:
         reentry_short &= c["impulse_recent"] & (c["impulse_dir"] == "UP")
 
+    # ENTRY_DIAG: impulse gate removed candidates
+    if debug_entry_filters:
+        try:
+            removed = (base_short & (~reentry_short)).fillna(False)
+            n_removed = int(removed.sum())
+            if n_removed > 0:
+                _entry_diag_bump(ctx, "IMPULSE_TOO_SMALL", n_removed)
+        except Exception:
+            pass
+
     if debug_entry_filters:
         b = int(base_short.sum())
         a = int(reentry_short.sum())
@@ -457,7 +517,12 @@ def generate_trend_entries(
         entry_px = float(c.loc[i, "close"])
         atr = float(c.loc[i, "atr"])
         sl = float(recent_high.loc[i] + sl_atr_buffer * atr)
-        risk = max(1e-9, sl - entry_px)
+        risk0 = float(sl - entry_px)
+        if (not np.isfinite(risk0)) or (risk0 <= 0):
+            if debug_entry_filters:
+                _entry_diag_bump(ctx, "SL_INVALID", 1)
+            continue
+        risk = max(1e-9, risk0)
         tp = entry_px - rr * risk
 
         entries.append(Entry(
@@ -467,6 +532,7 @@ def generate_trend_entries(
             entry=entry_px,
             sl=sl,
             tp=tp,
+            symbol=str(symbol).strip(),
             meta="TDP_TOP trend continuation",
             ctx_sub_label="TDP_TOP",
             regime=str(c.loc[i, "regime"]),
@@ -488,7 +554,16 @@ def generate_trend_entries(
 
     future_reclaim = reclaim.rolling(reclaim_lookahead).max().shift(-(reclaim_lookahead - 1))
     future_reclaim = future_reclaim.fillna(False)
-
+    # ENTRY_DIAG: trend/phase mismatch (TDP_BOT exists but phase is not TREND_UP)
+    if debug_entry_filters:
+        try:
+            base_lbl = ((c["sub_label"] == "TDP_BOT") & dev_dn_recent).fillna(False)
+            mismatch = (base_lbl & (c["phase"] != "PHASE_TREND_UP")).fillna(False)
+            n_mismatch = int(mismatch.sum())
+            if n_mismatch > 0:
+                _entry_diag_bump(ctx, "TREND_MISMATCH", n_mismatch)
+        except Exception:
+            pass
     # --- base (no impulse required) ---
     reentry_long = (
             (c["sub_label"] == "TDP_BOT")
@@ -505,6 +580,16 @@ def generate_trend_entries(
         imp_down = (c["impulse_recent"] & (c["impulse_dir"] == "DOWN")).fillna(False)
         had_imp_down = imp_down.rolling(had_imp_down_window).max().fillna(False)
         reentry_long &= had_imp_down
+
+    # ENTRY_DIAG: impulse gate removed candidates
+    if debug_entry_filters:
+        try:
+            removed = (base_long & (~reentry_long)).fillna(False)
+            n_removed = int(removed.sum())
+            if n_removed > 0:
+                _entry_diag_bump(ctx, "IMPULSE_TOO_SMALL", n_removed)
+        except Exception:
+            pass
 
     setup_long = reentry_long
 
@@ -530,7 +615,12 @@ def generate_trend_entries(
         atr = float(c.loc[j, "atr"])
         base_low = float(c.loc[i:j_end, "low"].min())
         sl = float(base_low - sl_atr_buffer * atr)
-        risk = max(1e-9, entry_px - sl)
+        risk0 = float(entry_px - sl)
+        if (not np.isfinite(risk0)) or (risk0 <= 0):
+            if debug_entry_filters:
+                _entry_diag_bump(ctx, "SL_INVALID", 1)
+            continue
+        risk = max(1e-9, risk0)
         tp = entry_px + rr_long * risk
 
         entries.append(Entry(
@@ -540,6 +630,7 @@ def generate_trend_entries(
             entry=entry_px,
             sl=sl,
             tp=tp,
+            symbol=str(symbol).strip(),
             meta="TDP_BOT sweep->reclaim",
             ctx_sub_label="TDP_BOT",
             regime=str(c.loc[j, "regime"]),
@@ -557,16 +648,26 @@ def generate_trend_entries(
     #   - PHASE_TREND_DOWN -> only SHORT trend setups
     #   - PHASE_RANGE      -> range_short (+ range_long if enabled)
     # ============================================================
+    phase_now = ""
     try:
-        phase_now = str(ctx.get("phase", "") or "").upper()
+        if isinstance(ctx, pd.DataFrame):
+            if ("phase" in ctx.columns) and len(ctx) > 0:
+                phase_now = str(ctx["phase"].iloc[-1] or "").upper()
+        elif hasattr(ctx, "get"):
+            phase_now = str(ctx.get("phase", "") or "").upper()
     except Exception:
         phase_now = ""
+
     if not phase_now:
         try:
             if "phase" in c.columns and len(c) > 0:
                 phase_now = str(c["phase"].iloc[-1] or "").upper()
         except Exception:
             phase_now = ""
+
+    if debug_entry_filters:
+        tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+        print(f"{tag} phase_fallback_resolved phase_now={phase_now or 'UNKNOWN'}")
 
     # "enable_range_long" may not be available in every generator scope; default to False safely.
     enable_range_long_flag = bool(locals().get("enable_range_long", False))
@@ -593,10 +694,11 @@ def generate_trend_entries(
                 and str(getattr(e, "side", "")).upper() != "LONG"
             ]
 
-        if debug_entry_filters:
-            tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
-            print(f"{tag} generate_entries_from_ctx returned {len(entries)} entries")
-        return entries
+    if debug_entry_filters:
+        tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+        print(f"{tag} generate_entries_from_ctx returned {len(entries)} entries")
+
+    return entries
 
 
 
@@ -651,6 +753,7 @@ def _generate_range_top_short_v2(
     cooldown_candles: int,
     debug_entry_filters: bool = False,
     symbol: str = "",
+    diag_ctx: Optional[pd.DataFrame] = None,
 ) -> list[Entry]:
     """RANGE_TOP_SHORT_V2 (BTC-first, stable)
 
@@ -670,6 +773,11 @@ def _generate_range_top_short_v2(
         return []
 
     tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
+
+    # One-time diag target (avoid pandas truthiness issues like: diag_ctx or c)
+    _diag_df: Optional[pd.DataFrame] = None
+    if debug_entry_filters:
+        _diag_df = diag_ctx if isinstance(diag_ctx, pd.DataFrame) else c
 
     # width gate (per candle)
     range_width_atr = (c["range_hi"] - c["range_lo"]).abs() / c["atr"]
@@ -712,6 +820,7 @@ def _generate_range_top_short_v2(
 
         if j_reclaim is None:
             if debug_entry_filters:
+                _entry_diag_bump(_diag_df, "RETEST_FAIL", 1)  # (optional rename to RECLAIM_FAIL if you want)
                 print(f"{tag} RANGE_TOP_NO_RECLAIM idx={i} lookahead={reclaim_lookahead}")
             i += 1
             continue
@@ -725,16 +834,21 @@ def _generate_range_top_short_v2(
             high_k = float(c.loc[k, "high"])
             close_k = float(c.loc[k, "close"])
 
-            if (high_k >= (hi_k - float(retest_tol_atr) * atr_k)) and (close_k < (hi_k - float(reclaim_buf_atr) * atr_k)):
+            if (high_k >= (hi_k - float(retest_tol_atr) * atr_k)) and (
+                close_k < (hi_k - float(reclaim_buf_atr) * atr_k)
+            ):
                 mid_k = float((float(c.loc[k, "range_hi"]) + float(c.loc[k, "range_lo"])) / 2.0)
                 if close_k <= mid_k:
                     # too late (already at/under mid)
+                    if debug_entry_filters:
+                        _entry_diag_bump(_diag_df, "RR_TOO_LOW", 1)
                     continue
                 k_entry = k
                 break
 
         if k_entry is None:
             if debug_entry_filters:
+                _entry_diag_bump(_diag_df, "RETEST_FAIL", 1)
                 print(f"{tag} RANGE_TOP_NO_RETEST idx={i} reclaim_idx={j_reclaim} lookahead={retest_lookahead}")
             i += 1
             continue
@@ -746,6 +860,8 @@ def _generate_range_top_short_v2(
 
         # sanity: TP < entry < SL
         if not (tp < entry_px < sl):
+            if debug_entry_filters:
+                _entry_diag_bump(_diag_df, "SL_INVALID", 1)
             i = k_entry + 1
             continue
 
@@ -754,26 +870,28 @@ def _generate_range_top_short_v2(
             i = k_entry + 1
             continue
 
-        entries.append(Entry(
-            timestamp=pd.Timestamp(c.loc[k_entry, "timestamp"]),
-            model="RANGE_TOP_SHORT_V2",
-            side="SHORT",
-            entry=entry_px,
-            sl=sl,
-            tp=tp,
-            meta="RANGE_TOP_SHORT v2: sweep_up -> reclaim -> retest -> mid",
-            ctx_sub_label="RANGE_TOP_SHORT",
-            regime=str(c.loc[k_entry, "regime"]) if "regime" in c.columns else None,
-            trend_dir=str(c.loc[k_entry, "trend_dir"]) if "trend_dir" in c.columns else None,
-            trend_strength=float(c.loc[k_entry, "trend_strength"]) if "trend_strength" in c.columns else None,
-            atr_pct=float(c.loc[k_entry, "atr_pct"]) if "atr_pct" in c.columns else None,
-            phase=str(c.loc[k_entry, "phase"]) if "phase" in c.columns else "PHASE_RANGE",
-        ))
+        entries.append(
+            Entry(
+                timestamp=pd.Timestamp(c.loc[k_entry, "timestamp"]),
+                model="RANGE_TOP_SHORT_V2",
+                side="SHORT",
+                entry=entry_px,
+                sl=sl,
+                tp=tp,
+                symbol=str(symbol).strip(),
+                meta="RANGE_TOP_SHORT v2: sweep_up -> reclaim -> retest -> mid",
+                ctx_sub_label="RANGE_TOP_SHORT",
+                regime=str(c.loc[k_entry, "regime"]) if "regime" in c.columns else None,
+                trend_dir=str(c.loc[k_entry, "trend_dir"]) if "trend_dir" in c.columns else None,
+                trend_strength=float(c.loc[k_entry, "trend_strength"]) if "trend_strength" in c.columns else None,
+                atr_pct=float(c.loc[k_entry, "atr_pct"]) if "atr_pct" in c.columns else None,
+                phase=str(c.loc[k_entry, "phase"]) if "phase" in c.columns else "PHASE_RANGE",
+            )
+        )
 
         i = k_entry + int(max(1, cooldown_candles))
 
     return entries
-
 
 
 def generate_range_entries(
@@ -851,6 +969,7 @@ def generate_range_entries(
         cooldown_candles=int(cooldown_candles),
         debug_entry_filters=debug_entry_filters,
         symbol=symbol,
+        diag_ctx=ctx,
     )
 
     # lock: ensure router guarantees are never violated
@@ -915,6 +1034,23 @@ def generate_entries_from_ctx(
 ) -> list["Entry"]:
 
     c = ctx.copy().sort_values("timestamp").reset_index(drop=True)
+
+    # ENTRY_DIAG: init drop counters (only in debug mode)
+    # IMPORTANT: _entry_diag_bump() writes into *ctx.attrs*
+    if debug_entry_filters:
+        try:
+            if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+                ctx.attrs["_entry_diag"] = {}
+        except Exception:
+            pass
+
+        # optional mirror (ok to keep)
+        try:
+            if hasattr(c, "attrs") and isinstance(c.attrs, dict):
+                c.attrs["_entry_diag"] = ctx.attrs.get("_entry_diag", {})
+        except Exception:
+            pass
+
 
     # ============================================================
 
@@ -1072,68 +1208,55 @@ def generate_entries_from_ctx(
     except Exception:
 
         pass
-    # DEV1-1 HARD CLOSE: Throughput=0 diagnostics (top reasons)
+    # ENTRY_DIAG: explainable drop breakdown (only when entry_model returned 0)
     # --------------------------------------------------------
-    if debug_entry_filters and (not entries):
+    # ENTRY_DIAG: explainable drop breakdown
+    diag_always = False
+    try:
+        if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+            diag_always = bool(ctx.attrs.get("diag_always", False))
+    except Exception:
+        diag_always = False
+
+    if debug_entry_filters and ((not entries) or diag_always):
         try:
-            reasons: dict[str, int] = {}
+            diag = {}
+            if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+                diag = ctx.attrs.get("_entry_diag") or {}
 
-            def _bump(r: str) -> None:
-                reasons[r] = int(reasons.get(r, 0)) + 1
+            keys = [
+                "RR_TOO_LOW",
+                "IMPULSE_TOO_SMALL",
+                "RETEST_FAIL",
+                "TREND_MISMATCH",
+                "SL_INVALID",
+            ]
+            pairs = [(k, int(diag.get(k, 0) or 0)) for k in keys]
+            pairs = [(k, v) for (k, v) in pairs if v > 0]
+            pairs = sorted(pairs, key=lambda kv: kv[1], reverse=True)[:3]
 
-            # Phase toggles
-            if phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN") and (not enable_trend):
-                _bump("TREND_DISABLED")
-            if phase_last == "PHASE_RANGE" and (not enable_range_short) and (not enable_range_long):
-                _bump("RANGE_DISABLED")
-
-            # Vol sanity (diag only)
-            atrp = None
-            try:
-                atrp = float(c["atr_pct"].iloc[-1]) if ("atr_pct" in c.columns and len(c) > 0) else None
-            except Exception:
-                atrp = None
-            if phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN") and (atrp is not None) and atrp < 0.004:
-                _bump("LOW_VOL_TREND")
-            if phase_last == "PHASE_RANGE" and (atrp is not None) and atrp > 0.012:
-                _bump("HIGH_VOL_RANGE")
-
-            # Label presence
-            labels: set[str] = set()
-            try:
-                if "ctx_sub_label" in c.columns:
-                    labels |= set(str(x) for x in c["ctx_sub_label"].dropna().tail(200).unique())
-                if "sub_label" in c.columns:
-                    labels |= set(str(x) for x in c["sub_label"].dropna().tail(200).unique())
-            except Exception:
-                labels = set()
-
-            has_tdp = any(str(x).upper().startswith("TDP_") for x in labels)
-            has_tts = any(str(x).upper().startswith("TTS_") for x in labels)
-
-            if phase_last in ("PHASE_TREND_UP", "PHASE_TREND_DOWN") and (not has_tdp):
-                _bump("NO_TDP_LABELS")
-            if enable_tts_gate and (not has_tts):
-                _bump("TTS_GATE_ON_NO_TTS_LABELS")
-
-            # Optional gate hint
-            if require_impulse_before_tdp:
-                _bump("IMPULSE_GATE_ON")
-
-            if not reasons:
-                _bump("NO_SETUPS_MATCHED")
-
-            top = sorted(reasons.items(), key=lambda kv: kv[1], reverse=True)[:3]
             tag = f"[ENTRY_DIAG][{symbol}]" if symbol else "[ENTRY_DIAG]"
-            print(f"{tag} raw_entries=0 top_reasons={top} phase={phase_last} atr_pct={atrp}")
+            print(tag)
+
+            if not pairs:
+                print("NO_BUMPS (no candidates hit filter counters; check phase routing / early exits)")
+
+            for k, v in pairs:
+                print(f"{k}={v}")
         except Exception as _e:
             tag = f"[ENTRY_DIAG][{symbol}]" if symbol else "[ENTRY_DIAG]"
-            print(f"{tag} raw_entries=0 diag_failed err={repr(_e)}")
+            print(f"{tag} diag_failed err={repr(_e)}")
 
-    
     # --- DEBUG: force at least one synthetic entry so pipeline stages (cluster/invalidation/budget) can be exercised ---
     # This ONLY activates when caller passes debug_entry_filters=True and no setups matched.
-    if debug_entry_filters and (len(entries) == 0):
+    debug_force_entries = False
+    try:
+        if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+            debug_force_entries = bool(ctx.attrs.get("debug_force_entries", False))
+    except Exception:
+        debug_force_entries = False
+
+    if debug_entry_filters and debug_force_entries and (len(entries) == 0):
         try:
             last = c.iloc[-1]
             ts = pd.Timestamp(last["timestamp"])
@@ -1159,6 +1282,7 @@ def generate_entries_from_ctx(
                 entry=close_px,
                 sl=sl_s,
                 tp=tp_s,
+                symbol=str(symbol).strip(),
                 meta="DEBUG: forced entry (no setups matched)",
                 ctx_sub_label="DEBUG",
                 regime=str(last.get("market_regime", last.get("regime", ""))) or None,
@@ -1180,6 +1304,7 @@ def generate_entries_from_ctx(
                 entry=close_px,
                 sl=sl_l,
                 tp=tp_l,
+                symbol=str(symbol).strip(),
                 meta="DEBUG: forced entry (no setups matched)",
                 ctx_sub_label="DEBUG",
                 regime=str(last.get("market_regime", last.get("regime", ""))) or None,

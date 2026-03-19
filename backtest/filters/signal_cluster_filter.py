@@ -1,4 +1,3 @@
-# backtest/filters/signal_cluster_filter.py
 from __future__ import annotations
 
 import logging
@@ -7,6 +6,38 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _entry_field(entry: Any, field: str, default: Any = None) -> Any:
+    try:
+        if isinstance(entry, dict):
+            return entry.get(field, default)
+        return getattr(entry, field, default)
+    except Exception:
+        return default
+
+
+def _emit_cluster_decision(entry: Any, *, ranking_source: str, outcome: str, enabled: bool) -> None:
+    if not enabled:
+        return
+    try:
+        print(
+            f"[CLUSTER_DECISION] symbol={_extract_symbol(entry) or 'UNKNOWN'} "
+            f"model={_entry_field(entry, 'model', '')} "
+            f"score={_safe_float(_entry_field(entry, 'score', rr_score(entry))):.6f} "
+            f"signal_score={_safe_float(_entry_field(entry, 'signal_score', 0.0)):.6f} "
+            f"ranking_source={ranking_source} "
+            f"outcome={outcome}"
+        )
+    except Exception:
+        return
 
 # ----------------------------
 # Asset groups
@@ -143,6 +174,38 @@ def model_score_from_meta(entry: Any, default: float = 0.0) -> float:
         return default
 
 
+def signal_score_value(entry: Any) -> float:
+    """Best-effort Signal Scoring V1 accessor. Higher is better."""
+    try:
+        if isinstance(entry, dict):
+            v = entry.get("signal_score", entry.get("score", 0.0))
+        else:
+            v = getattr(entry, "signal_score", getattr(entry, "score", 0.0))
+        return float(v)
+    except Exception:
+        return 0.0
+
+
+def signal_score_with_fallback(entry: Any) -> float:
+    """Opt-in cluster ranking: prefer signal_score, then score, then RR."""
+    try:
+        if isinstance(entry, dict):
+            if entry.get("signal_score") is not None:
+                return float(entry.get("signal_score"))
+            if entry.get("score") is not None:
+                return float(entry.get("score"))
+        else:
+            v_signal = getattr(entry, "signal_score", None)
+            if v_signal is not None:
+                return float(v_signal)
+            v_score = getattr(entry, "score", None)
+            if v_score is not None:
+                return float(v_score)
+    except Exception:
+        pass
+    return rr_score(entry)
+
+
 # ----------------------------
 # Main filter
 # ----------------------------
@@ -158,6 +221,8 @@ def cluster_filter_entries(
     max_per_group: int = 1,
     group_fn: Callable[[Optional[str]], str] = default_group_for_symbol,
     score_fn: Callable[[Any], float] = rr_score,
+    debug: bool = False,
+    ranking_source: str = "RR",
 ) -> ClusterFilterResult:
     """
     Group entries by asset group (BTC / ALT_L1 / MEME / OTHER).
@@ -179,6 +244,8 @@ def cluster_filter_entries(
     for grp, lst in buckets.items():
         if len(lst) <= max_per_group:
             kept.extend(lst)
+            for e in lst:
+                _emit_cluster_decision(e, ranking_source=ranking_source, outcome="kept", enabled=debug)
             log.debug("[CLUSTER_FILTER] group=%s kept=%d dropped=%d", grp, len(lst), 0)
             continue
 
@@ -188,7 +255,12 @@ def cluster_filter_entries(
         kept.extend(k)
         dropped.extend(d)
 
-        log.debug("[CLUSTER_FILTER] group=%s side=%s phase=%s kept=%d dropped=%d", grp, side, ph, len(k), len(d))
+        for e in k:
+            _emit_cluster_decision(e, ranking_source=ranking_source, outcome="kept", enabled=debug)
+        for e in d:
+            _emit_cluster_decision(e, ranking_source=ranking_source, outcome="dropped", enabled=debug)
+
+        log.debug("[CLUSTER_FILTER] group=%s kept=%d dropped=%d", grp, len(k), len(d))
 
     return ClusterFilterResult(kept=kept, dropped=dropped)
 
@@ -198,9 +270,25 @@ def apply_signal_cluster_filter(
     entries: List[Any],
     *,
     max_per_group: int = 1,
-    score: str = "RR",  # "RR" or "MODEL_SCORE"
+    score: str = "RR",  # "RR" or "MODEL_SCORE"; opt-in: "SIGNAL_SCORE"
     phase: Optional[str] = None,
+    debug: bool = False,
 ) -> Tuple[List[Any], List[Any]]:
-    score_fn = rr_score if score.upper() == "RR" else (lambda e: model_score_from_meta(e, default=0.0))
-    res = cluster_filter_entries(entries, max_per_group=max_per_group, score_fn=score_fn, phase=phase)
+    score_fn = (
+        signal_score_with_fallback
+        if score.upper() == "SIGNAL_SCORE"
+        else (rr_score if score.upper() == "RR" else (lambda e: model_score_from_meta(e, default=0.0)))
+    )
+    # Keep `phase` in the wrapper signature for backward compatibility with callers
+    # (e.g. live_signal_runner), but do not forward it because
+    # `cluster_filter_entries(...)` does not accept or use this argument.
+    _ = phase
+
+    res = cluster_filter_entries(
+        entries,
+        max_per_group=max_per_group,
+        score_fn=score_fn,
+        debug=debug,
+        ranking_source=str(score).upper(),
+    )
     return res.kept, res.dropped

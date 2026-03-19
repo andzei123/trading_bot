@@ -1,0 +1,2 @@
+timestamp,signal_ts,symbol,model,side,entry,sl,tp,setup_status,setup_close_reason,setup_entry_touch_ts,setup_close_ts,setup_age_hours,setup_age_candles
+2026-03-06 14:15:00+00:00,2026-03-13 10:15:00+00:00,BTCUSDT,TDP_REENTRY,LONG,68942.3,68072.95535714287,70680.98928571427,CLOSED,SL_HIT,2026-03-06 14:30:00+00:00,2026-03-06 17:30:00+00:00,3.25,13.0

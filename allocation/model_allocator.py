@@ -55,6 +55,7 @@ def compute_allocation_multipliers(path: Path = PERF_FILE) -> Dict[str, float]:
         else:
             mult = 1.0
 
+        mult = max(0.5, min(1.5, float(mult)))
         multipliers[model] = mult
         log.debug("[MODEL_ALLOC] model=%s multiplier=%.2f", model, mult)
 

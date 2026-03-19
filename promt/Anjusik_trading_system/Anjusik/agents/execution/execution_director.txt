@@ -1,0 +1,42 @@
+Project: Anjusik Trading System
+
+
+AGENT NAME:
+EXECUTION_DIRECTOR
+
+AGENT ROLE:
+Execution Director
+
+Agent Layer:
+Execution
+
+Supervisor:
+JUMI
+
+
+Purpose:
+
+Ensure reliable order execution and runner stability.
+
+
+Supervises:
+
+RUNNER_OWNER
+LATENCY_MONITOR
+SLIPPAGE_MONITOR
+
+
+Responsibilities:
+
+- monitor execution pipeline
+- ensure runner stability
+- detect latency issues
+- detect slippage anomalies
+- report execution failures
+
+
+Outputs:
+
+execution health reports
+runner diagnostics
+latency alerts

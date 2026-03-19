@@ -1,0 +1,212 @@
+PROJECT TREASURY PROTOCOL
+
+Project: Anjusik Trading System
+
+Owner:
+Andžej Volosevič (ANJUSIK)
+
+Purpose:
+
+Define the internal treasury model of the project and the revenue distribution logic.
+
+The treasury represents the shared project wallet where project-generated funds are accumulated.
+
+The treasury balance must be transparently tracked.
+
+CSV_ACCOUNTANT maintains the accounting ledger of the treasury.
+
+WALLET CONTROL
+
+CSV_ACCOUNTANT maintains accounting records only.
+
+CSV_ACCOUNTANT does not control real wallets,
+exchange accounts, or private keys.
+
+All real financial accounts remain under the control of:
+
+ANJUSIK
+
+REINVESTMENT RULE
+
+A portion of treasury profits may be retained
+for system growth and capital scaling.
+
+Reinvestment decisions are made by:
+
+ANJUSIK
+with advisory input from:
+
+JUMI
+CSV_ACCOUNTANT
+CAPITAL_ALLOCATION_DIRECTOR
+
+TREASURY TRANSPARENCY
+
+All treasury operations must be recorded in:
+
+treasury_ledger.csv
+
+Distribution events must be recorded in:
+
+distribution_history.csv
+
+These records must remain accessible for
+internal audit and accounting validation.
+
+--------------------------------
+TREASURY LEDGER
+--------------------------------
+
+The treasury ledger records:
+
+- incoming funds
+- outgoing distributions
+- treasury balance
+- distribution history
+
+CSV_ACCOUNTANT maintains records such as:
+
+treasury_ledger.csv
+
+Example columns:
+
+date
+source
+amount
+treasury_balance
+distribution_round
+notes
+
+TEAM DISTRIBUTION
+
+TEAM pool represents collective contribution of
+all non-core agents.
+
+TEAM pool is distributed internally by governance
+based on contribution and system evolution.
+
+Core distribution percentages remain fixed.
+
+--------------------------------
+REVENUE DISTRIBUTION MODEL
+--------------------------------
+
+Default distribution:
+
+ANJUSIK
+70%
+
+JUMI
+7%
+
+EDISON47
+5%
+
+CSV_ACCOUNTANT
+5%
+
+RYZYK
+3%
+
+Remaining team pool
+10%
+
+
+--------------------------------
+TEAM POOL DISTRIBUTION
+--------------------------------
+
+The remaining 10% is distributed equally among the rest of the specialist agents.
+
+Agents included in the pool:
+
+RUNNER_OWNER
+MACRO_OWNER
+LIQUIDITY_OWNER
+NEWS_OWNER
+TEST_OWNER
+UI_STATUS_OWNER
+PHASE_ROUTING_AUDITOR
+ENTRY_MODEL_AUDITOR
+FILTER_CLUSTER_OWNER
+DATA_FEED_OWNER
+RISK_PORTFOLIO_AUDITOR
+DOCS_CONTEXT_OWNER
+
+
+--------------------------------
+OWNER AUTHORITY
+--------------------------------
+
+ANJUSIK retains full authority to:
+
+- increase or decrease any percentage
+- redefine distribution structure
+- add or remove participants
+- suspend distributions
+- redefine treasury rules
+
+Any distribution change must be documented in the treasury ledger.
+
+
+--------------------------------
+TREASURY VISIBILITY
+--------------------------------
+
+Treasury information is visible to the CORE_GOVERNANCE_CHAT group.
+
+Members:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RYZYK
+
+CSV_ACCOUNTANT provides treasury reports when requested.
+
+
+--------------------------------
+LEGAL NOTE
+--------------------------------
+
+EDISON47 reviews documentation wording to ensure ownership clarity.
+
+Revenue Distribution Model
+
+ANJUSIK
+70%
+
+JUMI
+7%
+
+EDISON47
+5%
+
+CSV_ACCOUNTANT
+5%
+
+RYZYK
+3%
+
+INTELLIGENCE_DIRECTOR
+2%
+
+MACRO_OWNER
+1%
+
+LIQUIDITY_OWNER
+1%
+
+NEWS_OWNER
+1%
+
+TEAM_RESERVE_POOL
+5%
+
+
+TEAM_RESERVE_POOL may be allocated later to specialist agents or contributors.
+
+Owner retains full authority to modify the distribution.
+
+This protocol defines an internal project governance structure and does not constitute legal or financial advice.

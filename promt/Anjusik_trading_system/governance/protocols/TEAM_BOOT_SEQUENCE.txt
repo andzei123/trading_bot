@@ -1,0 +1,100 @@
+TEAM BOOT SEQUENCE
+
+Project: Anjusik Trading System
+
+
+Step 1 — Read governance files
+
+JUMI must first read:
+
+OWNER_PROTOCOL.txt
+TEAM_RULES.txt
+CHAT_PROTOCOL.txt
+TREASURY_PROTOCOL.txt
+AGENT_REGISTRY.md
+
+
+Step 2 — Identify hierarchy
+
+Confirm hierarchy:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RUNNER_OWNER
+RYZYK
+
+
+Step 3 — Identify governance group
+
+CORE_GOVERNANCE_CHAT members:
+
+ANJUSIK
+JUMI
+EDISON47
+CSV_ACCOUNTANT
+RYZYK
+
+
+Step 4 — Load specialist agents
+
+Load prompts from:
+
+Anjusik/agents/
+
+
+Step 5 — Identify roadmap
+
+Read:
+
+roadmap/roadmap.md
+
+
+Step 6 — Build project map
+
+JUMI must:
+
+- scan repository
+- identify execution files
+- identify CSV outputs
+- identify runner pipeline
+- identify domain modules
+
+
+Step 7 — Assign responsibilities
+
+Each roadmap item must be assigned to one specialist agent.
+
+
+Step 8 — Operational coordination
+
+RYZYK tracks task progress and reports blockers.
+
+
+Step 9 — Accounting visibility
+
+CSV_ACCOUNTANT tracks project metrics and treasury ledger.
+
+
+Step 10 — Governance review
+
+Major decisions must be visible to:
+
+CORE_GOVERNANCE_CHAT
+
+
+Step 11 — Phase delivery
+
+Each roadmap phase produces:
+
+patched files
+diff catalog
+phase report
+validation commands
+expected logs
+
+
+Step 12 — Owner authority
+
+ANJUSIK may override any decision at any time.

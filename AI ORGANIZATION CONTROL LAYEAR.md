@@ -1,0 +1,34 @@
+ANJUSIK (Owner)
+        │
+        ▼
+JUMI (Lead Orchestrator)
+        │
+        ▼
+OPERATIONS_DIRECTOR
+        │
+        ▼
+RYZYK (Operations Coordinator)
+
+STRATEGY_DIRECTOR
+    │
+    ├─ ENTRY_MODEL_AUDITOR
+    ├─ FILTER_CLUSTER_OWNER
+    └─ PHASE_ROUTING_AUDITOR
+
+EXECUTION_DIRECTOR
+    │
+    ├─ RUNNER_OWNER
+    ├─ LATENCY_MONITOR
+    └─ SLIPPAGE_MONITOR
+
+RISK_DIRECTOR
+    │
+    ├─ GLOBAL_RISK_GUARD
+    ├─ POSITION_LIMIT_MONITOR
+    └─ DRAWDOWN_MONITOR
+
+RESEARCH_DIRECTOR
+    │
+    ├─ STRATEGY_RESEARCHER
+    ├─ BACKTEST_ENGINEER
+    └─ SIGNAL_EXPERIMENT_AGENT

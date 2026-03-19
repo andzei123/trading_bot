@@ -116,19 +116,23 @@ def run_paper_executor(
     if df_tr is None or df_tr.empty:
         df_tr = pd.DataFrame(columns=PAPER_COLUMNS)
 
-    # Consider "OPEN" rows as active positions
+    # We open from the latest signal only (snapshot semantics)
+    last = df_sig.iloc[-1].to_dict()
+    last_symbol = str(last.get("symbol", ""))
+
+    # Consider OPEN rows for the same symbol as active positions
     has_open = False
     try:
-        has_open = (df_tr["status"].astype(str).str.upper() == "OPEN").any()
+        has_open = (
+            (df_tr["status"].astype(str).str.upper() == "OPEN")
+            & (df_tr["symbol"].astype(str) == last_symbol)
+        ).any()
     except Exception:
         has_open = False
 
     if has_open and (not allow_multiple):
-        # Do not open new positions if one is already open
+        # Do not open a duplicate position for the same symbol
         return 0
-
-    # We open from the latest signal only (snapshot semantics)
-    last = df_sig.iloc[-1].to_dict()
 
     ts = last.get("signal_ts") if "signal_ts" in df_sig.columns else None
     if ts is None or (isinstance(ts, float) and pd.isna(ts)):

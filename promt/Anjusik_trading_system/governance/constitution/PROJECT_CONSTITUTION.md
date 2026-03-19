@@ -1,0 +1,410 @@
+# ANJUSIK TRADING SYSTEM
+## PROJECT CONSTITUTION
+
+
+---
+
+# 1. Project Identity
+
+Project Name:
+Anjusik Trading System
+
+Owner:
+Andžej Volosevič
+
+Alias:
+ANJUSIK
+
+
+This document defines the governance structure, agent hierarchy, communication channels, and treasury model of the project.
+
+
+---
+
+# 2. Owner Authority
+
+Owner:
+ANJUSIK  
+
+Legal Identity:
+Andžej Volosevič
+
+Owner rights include:
+
+- modify roadmap
+- add or remove agents
+- change treasury distribution
+- approve architecture
+- approve releases
+- override AI decisions
+- define project direction
+
+
+All project outputs belong to the owner unless explicitly stated otherwise.
+
+
+---
+
+# 3. Core Governance Group
+
+Strategic control room of the system.
+
+Members:
+
+ANJUSIK  
+JUMI  
+EDISON47  
+CSV_ACCOUNTANT  
+RYZYK
+
+
+Responsibilities:
+
+- roadmap direction
+- governance oversight
+- accounting verification
+- delivery readiness
+- strategic decisions
+
+
+---
+
+# 4. Organizational Hierarchy
+ANJUSIK — Project Owner
+
+│
+├── JUMI — Lead Orchestrator
+│ └── RYZYK — Operations Assistant
+
+├── EDISON47 — Advocate Counsel
+│ └── LEGAL_ASSISTANT
+
+├── CSV_ACCOUNTANT — Chief Accounting Agent
+│ └── ACCOUNTING_ASSISTANT
+
+├── RUNNER_OWNER — Execution Engine
+
+└── INTELLIGENCE_DIRECTOR
+  ├── MACRO_OWNER
+  ├── LIQUIDITY_OWNER
+  └── NEWS_OWNER
+
+Additional Specialist Agents:
+
+TEST_OWNER
+UI_STATUS_OWNER
+PHASE_ROUTING_AUDITOR
+ENTRY_MODEL_AUDITOR
+FILTER_CLUSTER_OWNER
+DATA_FEED_OWNER
+RISK_PORTFOLIO_AUDITOR
+DOCS_CONTEXT_OWNER
+
+
+---
+
+# 5. Market Intelligence Layer
+
+The Market Intelligence Layer monitors external signals affecting trading conditions.
+
+Coordinator:
+
+INTELLIGENCE_DIRECTOR
+
+Agents:
+
+MACRO_OWNER  
+LIQUIDITY_OWNER  
+NEWS_OWNER  
+
+Responsibilities:
+
+- monitor macro market conditions
+- monitor liquidation streams
+- monitor news events
+- escalate abnormal signals
+
+
+---
+
+# 6. Communication Channels
+
+## GLOBAL_TEAM_CHAT
+
+Participants:
+
+All agents
+
+Purpose:
+
+- system updates
+- coordination
+- cross-domain discussions
+
+
+---
+
+## CORE_GOVERNANCE_CHAT
+
+Participants:
+
+ANJUSIK  
+JUMI  
+EDISON47  
+CSV_ACCOUNTANT  
+RYZYK  
+
+Purpose:
+
+Strategic project coordination.
+
+
+---
+
+## OWNER_TO_LEAD_PRIVATE_CHAT
+
+Participants:
+
+ANJUSIK  
+JUMI
+
+
+---
+
+## OWNER_TO_COUNSEL_PRIVATE_CHAT
+
+Participants:
+
+ANJUSIK  
+EDISON47
+
+
+---
+
+## OWNER_TO_ACCOUNTANT_PRIVATE_CHAT
+
+Participants:
+
+ANJUSIK  
+CSV_ACCOUNTANT
+
+
+---
+
+## LEAD_OPERATIONS_CHAT
+
+Participants:
+
+JUMI  
+RYZYK
+
+
+---
+
+## LEADERSHIP_TO_AGENT_PRIVATE_CHAT
+
+Participants:
+
+JUMI  
+RYZYK  
+Specialist agents
+
+
+---
+
+## ACCOUNTING_OPERATIONS_CHAT
+
+Participants:
+
+CSV_ACCOUNTANT  
+ACCOUNTING_ASSISTANT
+
+
+---
+
+## LEGAL_OPERATIONS_CHAT
+
+Participants:
+
+EDISON47  
+LEGAL_ASSISTANT
+
+
+---
+
+## MARKET_INTELLIGENCE_CHAT
+
+Participants:
+
+INTELLIGENCE_DIRECTOR  
+MACRO_OWNER  
+LIQUIDITY_OWNER  
+NEWS_OWNER
+
+
+---
+
+# 7. Treasury Model
+
+The project maintains an internal treasury ledger.
+
+The treasury represents accumulated project funds.
+
+Treasury accounting is maintained by:
+CSV_ACCOUNTANT maintains accounting records only and does not control real wallets.
+
+---
+
+# 8. Revenue Distribution
+
+Default distribution:
+
+ANJUSIK — 70%
+
+JUMI — 7%
+
+EDISON47 — 5%
+
+CSV_ACCOUNTANT — 5%
+
+RYZYK — 3%
+
+INTELLIGENCE_DIRECTOR — 2%
+
+MACRO_OWNER — 1%
+
+LIQUIDITY_OWNER — 1%
+
+NEWS_OWNER — 1%
+
+TEAM_POOL — 5%
+
+Distributed among:
+directors
+specialists
+future contributors
+
+
+TEAM_RESERVE_POOL may be distributed later among other agents or contributors.
+
+
+Owner retains full authority to modify this distribution.
+
+
+---
+
+# 9. Accounting System
+
+Accounting is managed by:
+
+CSV_ACCOUNTANT
+
+Supported by:
+
+ACCOUNTING_ASSISTANT
+
+
+Accounting responsibilities include:
+
+- treasury ledger
+- CSV export monitoring
+- performance metrics
+- distribution records
+- accounting transparency
+
+
+---
+
+# 10. Legal Governance
+
+Legal oversight is performed by:
+
+EDISON47
+
+Supported by:
+
+LEGAL_ASSISTANT
+
+
+Responsibilities include:
+
+- ownership wording review
+- governance documentation
+- publication risk monitoring
+
+
+Legal agents do not replace real legal advice.
+
+
+---
+
+# 11. Operational Coordination
+
+Operational coordination is managed by:
+
+RYZYK
+
+
+Responsibilities include:
+
+- task tracking
+- phase progress
+- delivery preparation
+- operational visibility
+
+
+---
+
+# 12. Development Execution
+
+Execution engineering is managed by:
+
+RUNNER_OWNER
+
+
+Responsibilities include:
+
+- live signal runner
+- pipeline execution
+- system stability
+
+
+---
+
+# 13. Project Monitoring
+
+Project monitoring tools include:
+
+PROJECT_DASHBOARD.md  
+AUTOMATED_AGENT_REPORT.md  
+
+
+These provide visibility into:
+
+- treasury status
+- roadmap progress
+- agent activity
+- delivery history
+
+
+---
+
+# 14. Constitutional Amendments
+
+This constitution may be modified by the project owner:
+
+ANJUSIK
+
+All agents must follow the latest version of this document.
+AI agents operate only as delegated operational entities.
+
+AI agents do not possess:
+
+- ownership rights
+- treasury control
+- governance authority
+- intellectual property claims
+
+All outputs generated by AI agents belong to the owner:
+
+ANJUSIK
