@@ -1,0 +1,1 @@
+timestamp,signal_ts,model,side,entry,sl,tp,rr,ctx_sub_label,regime,trend_dir,trend_strength,atr_pct,phase,symbol,liq_bias,liq_risk_multiplier,risk_multiplier,block_reason,context_allow,macro_allow,macro_reason,macro_bias,macro_bias_mismatch,news_allow,news_reason,liq_allow,liq_reason,freeze_new_signals,setup_age_hours,setup_age_candles

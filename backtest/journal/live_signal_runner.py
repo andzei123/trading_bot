@@ -16,6 +16,9 @@ import importlib
 import pandas as pd
 import numpy as np
 import requests
+from backtest.runtime.context_builder import build_context
+from backtest.strategy.macro.service import evaluate_macro
+from backtest.strategy.router.router import route_phase, route_model
 from backtest.metrics.equity_curve_tracker import update_equity_curve_from_trades
 from backtest.live.regime_controller import decide_profile_from_performance
 from backtest.live.liquidation import start_liquidation_stream, get_liquidation_context_sync, get_liquidation_features_sync
@@ -1665,77 +1668,30 @@ def run_once(
     # ------------------------------------------------------------
 
     # build ctx and generate entries
-    ctx = ft.build_ctx(candles)
+    ctx = build_context(
+        candles,
+        diag_always=bool(diag_always),
+    )
 
     # ---- DEV4: phase hint BEFORE entry generation ----
     # goal:
     #  - decide PHASE_PRE from candles (+ macro bias hint)
     #  - map to entry_model phase format: PHASE_TREND_UP / PHASE_TREND_DOWN / PHASE_RANGE
 
-    macro_dec: dict[str, Any] = {}
-    macro_bias_hint = "NEUTRAL"
-    macro_phase_hint = "NA"
-    macro_strength_hint = None
-
-    # Prefer direct macro gate computation (independent of GateDecision schema)
-    try:
-        if compute_macro_gate is not None:
-            try:
-                macro_dec = compute_macro_gate(macro_dir="data/macro")  # type: ignore[arg-type]
-            except TypeError:
-                macro_dec = compute_macro_gate()  # type: ignore[call-arg]
-            except Exception:
-                # some repos store macro csv directly under data/
-                macro_dec = compute_macro_gate(macro_dir="data")  # type: ignore[arg-type]
-    except Exception:
-        macro_dec = {}
-
-    try:
-        macro_bias_hint = str(macro_dec.get("macro_bias") or "NEUTRAL").upper()
-        macro_phase_hint = str(macro_dec.get("macro_phase") or "NA")
-        macro_strength_hint = macro_dec.get("macro_strength", None)
-    except Exception:
-        macro_bias_hint, macro_phase_hint, macro_strength_hint = "NEUTRAL", "NA", None
-
-    # expose for downstream/debug + status (even if entries=0)
-    try:
-        ctx["macro_bias"] = macro_bias_hint
-        ctx["macro_phase"] = macro_phase_hint
-        ctx["macro_strength"] = macro_strength_hint
-    except Exception:
-        pass
-
-    # --- DEV4: Cross-Asset Macro Sync ---
-    cross_asset_regime = "NEUTRAL"
-    cross_asset_strength = 0.0
-    cross_asset_reason = "fallback"
-    cross_asset_status = "DISABLED"
-
-    try:
-        if compute_cross_asset_regime is not None:
-            res = compute_cross_asset_regime(
-                btc_trend=macro_dec.get("btc_trend"),
-                eth_trend=macro_dec.get("eth_trend"),
-                total3_trend=macro_dec.get("total3_trend"),
-                btcd_trend=macro_dec.get("btcd_trend"),
-                dxy_trend=macro_dec.get("dxy_trend", None),
-                emit_telemetry=False,
-            )
-
-            cross_asset_regime = str(getattr(res, "cross_asset_regime", "NEUTRAL")).upper()
-            cross_asset_strength = float(getattr(res, "strength", 0.0))
-            cross_asset_reason = str(getattr(res, "reason", "") or "")
-            cross_asset_status = "OK"
-
-    except Exception as e:
-        cross_asset_regime = "NEUTRAL"
-        cross_asset_strength = 0.0
-        cross_asset_reason = f"exception={type(e).__name__}"
-        cross_asset_status = "DISABLED"
-
-    ctx["cross_asset_regime"] = cross_asset_regime
-    ctx["cross_asset_strength"] = cross_asset_strength
-    ctx["cross_asset_reason"] = cross_asset_reason
+    macro_eval = evaluate_macro(
+        ctx,
+        compute_macro_gate=compute_macro_gate,
+        compute_cross_asset_regime=compute_cross_asset_regime,
+    )
+    ctx = macro_eval.ctx
+    macro_dec = macro_eval.macro_dec
+    macro_bias_hint = macro_eval.macro_bias_hint
+    macro_phase_hint = macro_eval.macro_phase_hint
+    macro_strength_hint = macro_eval.macro_strength_hint
+    cross_asset_regime = macro_eval.cross_asset_regime
+    cross_asset_strength = macro_eval.cross_asset_strength
+    cross_asset_reason = macro_eval.cross_asset_reason
+    cross_asset_status = macro_eval.cross_asset_status
 
     # Telemetry – CONTRACT LOG
     global _CROSS_ASSET_LOGGED_TS
@@ -1755,85 +1711,19 @@ def run_once(
     #print(f"[CROSS_ASSET] regime={cross_asset_regime}")
 
     # Decide phase using macro bias hint (fail-open to RANGE)
-    phase_authority_source = "decide_phase"
-    context_phase_pre_guard = "PHASE_RANGE"
-    trend_phase_label = "TREND_UNKNOWN"
-    try:
-        ph_pre = decide_phase(
-            candles=candles,
-            trend_long_tag="TDP_REENTRY",
-            trend_short_tag="TDP_REENTRY",
-            range_short_tag="RANGE_TOP_SHORT_V2",
-            allow_range_long=False,
-        )
-
-        ph_val = getattr(ph_pre, "phase", None)
-        try:
-            if isinstance(ph_val, pd.Series):
-                ph_val2 = ph_val.dropna()
-                ph_val = ph_val2.iloc[-1] if len(ph_val2) else None
-            elif isinstance(ph_val, (list, tuple)):
-                ph_val = ph_val[-1] if len(ph_val) else None
-        except Exception:
-            pass
-
-        ph_raw = str(ph_val or "RANGE").upper()
-        if ph_raw == "LONG":
-            ctx["phase"] = "PHASE_TREND_UP"
-        elif ph_raw == "SHORT":
-            ctx["phase"] = "PHASE_TREND_DOWN"
-        else:
-            ctx["phase"] = "PHASE_RANGE"
-
-        try:
-            context_phase_pre_guard = str(ctx["phase"].iloc[-1]) if isinstance(ctx, pd.DataFrame) and ("phase" in ctx.columns) else str(ctx.get("phase", "PHASE_RANGE"))
-        except Exception:
-            context_phase_pre_guard = "PHASE_RANGE"
-
-        if debug_regime:
-            print(f"[{now_utc_str()}] [PHASE_PRE][{bybit_symbol}] {ph_raw} | {getattr(ph_pre,'reason','')} macro_bias={macro_bias_hint}")
-    except Exception as _e:
-        ctx["phase"] = "PHASE_RANGE"
-        context_phase_pre_guard = "PHASE_RANGE"
-        phase_authority_source = "decide_phase_fallback"
-        if debug_regime:
-            print(f"[{now_utc_str()}] [PHASE_PRE][{bybit_symbol}] fallback PHASE_RANGE (error={repr(_e)})")
-
-    # DIAG: allow entry_model to print ENTRY_DIAG even when entries exist
-    try:
-        if hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
-            ctx.attrs["diag_always"] = bool(diag_always)
-    except Exception:
-        pass
-
-    # ============================================================
-    # Normalize ctx phase -> scalar (avoid pandas Series issues)
-    # MUST be before generate_entries_from_ctx
-    # ============================================================
-    phase_scalar = "PHASE_RANGE"
-    try:
-        if isinstance(ctx, pd.DataFrame) and ("phase" in ctx.columns):
-            s = ctx["phase"].dropna()
-            if len(s):
-                phase_scalar = str(s.iloc[-1]).upper()
-        else:
-            # if ctx is dict-like (just in case)
-            v = ctx.get("phase", None) if hasattr(ctx, "get") else None
-            phase_scalar = str(v or "PHASE_RANGE").upper()
-    except Exception:
-        phase_scalar = "PHASE_RANGE"
-
-    if phase_scalar not in {"PHASE_TREND_UP", "PHASE_TREND_DOWN", "PHASE_RANGE"}:
-        phase_scalar = "PHASE_RANGE"
-    try:
-        tdir = None
-        if isinstance(ctx, pd.DataFrame) and "trend_dir" in ctx.columns:
-            s = ctx["trend_dir"].dropna()
-            tdir = str(s.iloc[-1]).upper() if len(s) else None
-        trend_phase_label = f"TREND_{tdir}" if tdir else "TREND_UNKNOWN"
-    except Exception:
-        tdir = None
-        trend_phase_label = "TREND_UNKNOWN"
+    phase_eval = route_phase(
+        candles,
+        ctx=ctx,
+        debug_regime=bool(debug_regime),
+        symbol=str(bybit_symbol),
+        now_utc_str_fn=now_utc_str,
+    )
+    ctx = phase_eval.ctx
+    phase_authority_source = phase_eval.phase_authority_source
+    context_phase_pre_guard = phase_eval.context_phase_pre_guard
+    phase_scalar = phase_eval.phase_scalar
+    trend_phase_label = phase_eval.trend_phase_label
+    tdir = phase_eval.tdir
 
     _log_phase_authority(
         symbol=str(bybit_symbol),
@@ -1856,14 +1746,10 @@ def run_once(
         authority_source=str(phase_authority_source),
     )
 
-    ctx_em = ctx  # ctx passed into entry_model; use same object for attrs diag
-    entries = generate_entries_from_ctx(
-        ctx_em,
+    entries = route_model(
+        ctx,
+        generate_entries_from_ctx=generate_entries_from_ctx,
         symbol=bybit_symbol,
-        enable_trend=True,
-        enable_range_short=True,
-        enable_range_long=False,
-
         rr=rr,
         sl_atr_buffer=sl_atr_buffer,
         require_impulse_before_tdp=require_impulse_before_tdp,
@@ -1872,14 +1758,12 @@ def run_once(
         tdp_dev_lookback=tdp_dev_lookback,
         tts_retest_lookback=tts_retest_lookback,
         debug_entry_filters=bool(debug_entry_filters),
-        debug_long_funnel=bool(debug_entry_filters),
     )
 
 
     # ============================================================
     # DEV1 — Signal Cluster Filter (ENTRY → before risk/budget)
     # ============================================================
-    entries = list(entries or [])
     dropped_cluster = []
     if entries:
         cluster_score_field = _resolve_cluster_score_field(
