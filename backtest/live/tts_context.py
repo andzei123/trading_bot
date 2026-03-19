@@ -134,10 +134,10 @@ def annotate_tts_context(
     c = ctx_15m.copy()
 
     # --- Build HTF OHLC from 15m ---
-    o4h = _resample_ohlc(c, "4H")
+    o4h = _resample_ohlc(c, "4h")
     o1d = _resample_ohlc(c, "1D")
     o1w = _resample_ohlc(c, "1W")
-    o1m = _resample_ohlc(c, "1M")
+    o1m = _resample_ohlc(c, "1ME")
 
     # --- Compute EMA trends ---
     o4h["tts_trend_4h"] = _ema_trend(o4h, ema_fast, ema_slow).values

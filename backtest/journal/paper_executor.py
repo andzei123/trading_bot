@@ -132,6 +132,7 @@ def run_paper_executor(
 
     if has_open and (not allow_multiple):
         # Do not open a duplicate position for the same symbol
+        print(f"[PAPER] skip open symbol={last_symbol} reason=HAS_OPEN")
         return 0
 
     ts = last.get("signal_ts") if "signal_ts" in df_sig.columns else None

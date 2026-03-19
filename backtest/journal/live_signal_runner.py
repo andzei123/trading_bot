@@ -9,8 +9,7 @@ import inspect
 import re
 import json
 from pathlib import Path
-from datetime import datetime
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable, Any
 import os
 import importlib
@@ -191,7 +190,7 @@ def diag_log(event: str, **payload) -> None:
     if not DIAG_ENABLED:
         return
     try:
-        rec = {"ts": datetime.utcnow().isoformat(), "event": event}
+        rec = {"ts": datetime.now(timezone.utc).isoformat(), "event": event}
         rec.update({k: _json_safe(v) for k, v in payload.items()})
         DIAG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with DIAG_FILE.open("a", encoding="utf-8") as f:
@@ -319,6 +318,7 @@ def _log_invalidation_check(symbol: str, row: pd.Series, *, ordering_index: int,
 
 
 BYBIT_REST = "https://api.bybit.com"
+BTC_KILL_THRESHOLD_R = -15.0
 
 # ============================================================
 # D1: manual symbol universe (easy edit)
@@ -995,10 +995,13 @@ def _attach_signal_scores(df_e: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
     ).round(6)
 
     try:
-        for _, r in out.iterrows():
+        if len(out) > 0:
+            best_idx = pd.to_numeric(out["signal_score"], errors="coerce").fillna(-1e9).idxmax()
+            r = out.loc[best_idx]
             print(
-                f"[SIGNAL_SCORE] symbol={symbol} model={str(r.get('model', ''))} side={str(r.get('side', ''))} "
-                f"signal_score={_safe_float(r.get('signal_score', 0.0)):.2f} "
+                f"[SIGNAL_SCORE] symbol={symbol} n={len(out)} "
+                f"best_model={str(r.get('model', ''))} best_side={str(r.get('side', ''))} "
+                f"best_signal_score={_safe_float(r.get('signal_score', 0.0)):.2f} "
                 f"rr={_safe_float(r.get('score_rr', 0.0)):.2f} exec={_safe_float(r.get('score_exec', 0.0)):.2f} "
                 f"phase={_safe_float(r.get('score_phase_align', 0.0)):.1f} macro={_safe_float(r.get('score_macro_align', 0.0)):.1f} "
                 f"liq={_safe_float(r.get('score_liq_align', 0.0)):.1f} tts={_safe_float(r.get('score_tts', 0.0)):.1f}"
@@ -2246,11 +2249,7 @@ def run_once(
 
         would = used + plan_risk
 
-        print(
-            f"[CORR_CAP_DEBUG] cap_btc={CAP_BTC:.4f} cap_alt={CAP_ALT:.4f} cap_meme={CAP_MEME:.4f} "
-            f"used_btc={corr_btc_used:.4f} used_alt={corr_alt_used:.4f} used_meme={corr_meme_used:.4f} "
-            f"plan_risk={plan_risk:.4f} bucket={bucket} would={would:.4f}"
-        )
+        # CORR_CAP_DEBUG reduced to summary logs below to avoid per-row spam
 
         # HARD DROP only if > 1.2x cap
         if would > cap * 1.2:
@@ -2262,7 +2261,7 @@ def run_once(
             new_rm = rm * 0.25
             r["risk_multiplier"] = new_rm
             plan_risk = BASE_RISK * new_rm
-            print(f"[CORR_CAP_SOFT] bucket={bucket} applied_multiplier=0.25")
+            # CORR_CAP_SOFT kept silent here; summary remains in [CORR_CAP] log below
 
 
         # update exposure
@@ -2798,19 +2797,21 @@ def run_once(
     # DEV4: KILL SWITCH (rolling R) - global guardrail (fail-open)
     # ============================================================
     try:
+        ks_symbol = str(bybit_symbol).upper()
+        ks_threshold_r = float(BTC_KILL_THRESHOLD_R) if ks_symbol == "BTCUSDT" else float(kill_threshold_r)
         ks = rolling_r_guard(
             trades_csv=str(kill_trades_csv) if str(kill_trades_csv).strip() else str(out_csv),
-            threshold_r=float(kill_threshold_r),
+            threshold_r=ks_threshold_r,
             window_days=int(kill_window_days),
-            symbols=[str(bybit_symbol)],
+            symbols=[ks_symbol],
         )
         if not ks.ok:
-            print(f"[{now_utc_str()}] [KILL_SWITCH] {ks.reason}")
+            print(f"[{now_utc_str()}] [KILL_SWITCH] symbol={ks_symbol} threshold_used={ks_threshold_r:.2f} reason={ks.reason}")
             df_e["context_allow"] = False
             df_e["block_reason"] = (df_e.get("block_reason", "").astype(str) + " | " + str(ks.reason)).str.strip()
             df_e = df_e.iloc[0:0].copy()
         else:
-            print(f"[{now_utc_str()}] [KILL_SWITCH] ok ({ks.reason})")
+            print(f"[{now_utc_str()}] [KILL_SWITCH] symbol={ks_symbol} threshold_used={ks_threshold_r:.2f} reason={ks.reason}")
     except Exception as _ke:
         print(f"[{now_utc_str()}] [KILL_SWITCH] skip (error={repr(_ke)})")
 
