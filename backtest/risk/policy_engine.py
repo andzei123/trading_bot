@@ -5,6 +5,54 @@ from typing import Any
 import pandas as pd
 
 
+def evaluate_policy_kill_switch(
+    *,
+    symbol: str,
+    kill_threshold_r: float,
+    btc_kill_threshold_r: float,
+    kill_window_days: int,
+    kill_trades_csv: str,
+    out_csv: str,
+) -> dict[str, Any]:
+    """
+    Thin wrapper for kill-switch decision (Stage 3 Step 3).
+    DO NOT change semantics.
+    """
+    from backtest.live.kill_switch import rolling_r_guard
+
+    try:
+        ks_symbol = str(symbol).upper()
+
+        ks_threshold_r = (
+            float(btc_kill_threshold_r)
+            if ks_symbol == "BTCUSDT"
+            else float(kill_threshold_r)
+        )
+
+        ks = rolling_r_guard(
+            trades_csv=str(kill_trades_csv) if str(kill_trades_csv).strip() else str(out_csv),
+            threshold_r=ks_threshold_r,
+            window_days=int(kill_window_days),
+            symbols=[ks_symbol],
+        )
+
+        return {
+            "ok": bool(ks.ok),
+            "reason": str(ks.reason),
+            "symbol": ks_symbol,
+            "threshold_used": float(ks_threshold_r),
+            "error": None,
+        }
+
+    except Exception as e:
+        return {
+            "ok": True,  # fail-open (IMPORTANT: unchanged behavior)
+            "reason": "",
+            "symbol": str(symbol).upper(),
+            "threshold_used": None,
+            "error": repr(e),
+        }
+
 def evaluate_policy_has_open(
     df_tr: pd.DataFrame,
     *,

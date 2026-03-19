@@ -25,7 +25,7 @@ from backtest.live.liquidation import start_liquidation_stream, get_liquidation_
 from backtest.live.context_gate import GateDecision as ContextGateDecision, compute_context_gate
 from backtest.live.phase_router import decide_phase
 from backtest.live.tts_context import annotate_tts_context, get_tts_context_at
-from backtest.live.kill_switch import rolling_r_guard
+from backtest.risk.policy_engine import evaluate_policy_kill_switch
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.policy_engine import evaluate_policy_budget, evaluate_policy_corr_cap
@@ -2568,25 +2568,32 @@ def run_once(
     # ============================================================
     # ============================================================
     # DEV4: KILL SWITCH (rolling R) - global guardrail (fail-open)
-    # ============================================================
-    try:
-        ks_symbol = str(bybit_symbol).upper()
-        ks_threshold_r = float(BTC_KILL_THRESHOLD_R) if ks_symbol == "BTCUSDT" else float(kill_threshold_r)
-        ks = rolling_r_guard(
-            trades_csv=str(kill_trades_csv) if str(kill_trades_csv).strip() else str(out_csv),
-            threshold_r=ks_threshold_r,
-            window_days=int(kill_window_days),
-            symbols=[ks_symbol],
+    ks_decision = evaluate_policy_kill_switch(
+        symbol=str(bybit_symbol),
+        kill_threshold_r=float(kill_threshold_r),
+        btc_kill_threshold_r=float(BTC_KILL_THRESHOLD_R),
+        kill_window_days=int(kill_window_days),
+        kill_trades_csv=str(kill_trades_csv),
+        out_csv=str(out_csv),
+    )
+
+    if ks_decision["error"] is not None:
+        print(f"[{now_utc_str()}] [KILL_SWITCH] skip (error={ks_decision['error']})")
+    else:
+        print(
+            f"[{now_utc_str()}] [KILL_SWITCH] symbol={ks_decision['symbol']} "
+            f"threshold_used={ks_decision['threshold_used']:.2f} reason={ks_decision['reason']}"
         )
-        if not ks.ok:
-            print(f"[{now_utc_str()}] [KILL_SWITCH] symbol={ks_symbol} threshold_used={ks_threshold_r:.2f} reason={ks.reason}")
+
+        if not ks_decision["ok"]:
             df_e["context_allow"] = False
-            df_e["block_reason"] = (df_e.get("block_reason", "").astype(str) + " | " + str(ks.reason)).str.strip()
+            df_e["block_reason"] = (
+                    df_e.get("block_reason", "").astype(str)
+                    + " | "
+                    + str(ks_decision["reason"])
+            ).str.strip()
+
             df_e = df_e.iloc[0:0].copy()
-        else:
-            print(f"[{now_utc_str()}] [KILL_SWITCH] symbol={ks_symbol} threshold_used={ks_threshold_r:.2f} reason={ks.reason}")
-    except Exception as _ke:
-        print(f"[{now_utc_str()}] [KILL_SWITCH] skip (error={repr(_ke)})")
 
     # ============================================================
     # PHASE ENFORCE — use ctx phase (scalar from last candle) to filter models
