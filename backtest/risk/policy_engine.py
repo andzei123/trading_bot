@@ -53,6 +53,54 @@ def evaluate_policy_kill_switch(
             "error": repr(e),
         }
 
+def evaluate_policy_sizing(
+    df_e: pd.DataFrame,
+    *,
+    context_risk_multiplier: float,
+    equity_governor: Any,
+) -> dict[str, Any]:
+    """
+    Exact extraction of runner equity-governor sizing block.
+
+    DO NOT change semantics.
+    """
+
+    df_e = df_e.copy()
+
+    # 1) stamp context multiplier (unchanged)
+    df_e["risk_multiplier"] = float(context_risk_multiplier)
+
+    # 2) derive rm_before (unchanged)
+    try:
+        rm_before = float(df_e["risk_multiplier"].astype(float).iloc[0]) if len(df_e) else 1.0
+    except Exception:
+        rm_before = 1.0
+
+    # 3) apply governor (unchanged)
+    try:
+        rm_after, eg = equity_governor.apply(rm_before)
+
+        df_e["risk_multiplier"] = float(rm_after)
+        df_e["equity_dd"] = float(eg.dd)
+        df_e["equity_governor_multiplier"] = float(eg.multiplier)
+
+        return {
+            "df_e": df_e,
+            "logged": True,
+            "equity_dd": float(eg.dd),
+            "equity_governor_multiplier": float(eg.multiplier),
+        }
+
+    except Exception:
+        # fail-open — EXACT same behavior
+        df_e["equity_dd"] = 0.0
+        df_e["equity_governor_multiplier"] = 1.0
+
+        return {
+            "df_e": df_e,
+            "logged": False,
+        }
+
 def evaluate_policy_has_open(
     df_tr: pd.DataFrame,
     *,

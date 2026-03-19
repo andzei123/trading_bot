@@ -25,7 +25,12 @@ from backtest.live.liquidation import start_liquidation_stream, get_liquidation_
 from backtest.live.context_gate import GateDecision as ContextGateDecision, compute_context_gate
 from backtest.live.phase_router import decide_phase
 from backtest.live.tts_context import annotate_tts_context, get_tts_context_at
-from backtest.risk.policy_engine import evaluate_policy_kill_switch
+from backtest.risk.policy_engine import (
+    evaluate_policy_budget,
+    evaluate_policy_corr_cap,
+    evaluate_policy_kill_switch,
+    evaluate_policy_sizing,
+)
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.policy_engine import evaluate_policy_budget, evaluate_policy_corr_cap
@@ -2489,21 +2494,21 @@ def run_once(
         df_e["risk_multiplier"] = float(ctx_gate.risk_multiplier)
         # ============================================================
         # DEV2: Equity Governor (drawdown throttle)
-        # ============================================================
-        try:
-            rm_before = float(df_e["risk_multiplier"].astype(float).iloc[0]) if len(df_e) else 1.0
-        except Exception:
-            rm_before = 1.0
-        try:
-            rm_after, eg = EQUITY_GOVERNOR.apply(rm_before)
-            df_e["risk_multiplier"] = float(rm_after)
-            df_e["equity_dd"] = float(eg.dd)
-            df_e["equity_governor_multiplier"] = float(eg.multiplier)
-            print(f"[{now_utc_str()}] [EQUITY_GOVERNOR] dd={eg.dd:.4f} multiplier={eg.multiplier}")
-        except Exception:
-            # fail-open
-            df_e["equity_dd"] = 0.0
-            df_e["equity_governor_multiplier"] = 1.0
+        sizing_decision = evaluate_policy_sizing(
+            df_e,
+            context_risk_multiplier=float(ctx_gate.risk_multiplier),
+            equity_governor=EQUITY_GOVERNOR,
+        )
+
+        df_e = sizing_decision["df_e"]
+
+        # log lieka runner'yje (identiškas)
+        if sizing_decision["logged"]:
+            print(
+                f"[{now_utc_str()}] [EQUITY_GOVERNOR] "
+                f"dd={sizing_decision['equity_dd']:.4f} "
+                f"multiplier={sizing_decision['equity_governor_multiplier']}"
+            )
 
         # Only mark block_reason when trade is actually blocked
         df_e["block_reason"] = str(ctx_gate.reason) if (not ctx_gate.allow_trade) else ""
