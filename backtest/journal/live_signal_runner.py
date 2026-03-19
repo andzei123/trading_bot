@@ -884,20 +884,42 @@ def _load_portfolio_state(path: str) -> PortfolioState:
 
 
 
-def _resolve_cluster_score_field(entries, *, cluster_rank_signal_score: bool = False) -> str:
-    """Pick cluster ranking field safely.
+def _resolve_cluster_score_mode(
+    entries,
+    *,
+    cluster_score_mode: str = "LEGACY",
+    cluster_rank_signal_score: bool = False,
+) -> tuple[str, str]:
+    """Resolve cluster ranking mode and score field safely.
 
-    Default behavior stays unchanged.
-    Opt-in behavior uses signal_score.
+    Modes:
+      - LEGACY: preserve existing behavior exactly (score if present else RR)
+      - SIGNAL_SCORE: use canonical signal_score
+
+    Invalid values fail safe to LEGACY.
+    The legacy boolean flag is kept only as a backward-compatible alias.
     """
-    if bool(cluster_rank_signal_score):
-        return "signal_score"
+    requested_mode = str(cluster_score_mode or "").strip().upper()
+
+    if requested_mode in ("", "LEGACY") and bool(cluster_rank_signal_score):
+        requested_mode = "SIGNAL_SCORE"
+
+    if requested_mode not in {"LEGACY", "SIGNAL_SCORE"}:
+        print(
+            f"[{now_utc_str()}] [CLUSTER_RANK_MODE] "
+            f"invalid_score_mode={requested_mode or 'EMPTY'} fallback=LEGACY"
+        )
+        requested_mode = "LEGACY"
+
+    if requested_mode == "SIGNAL_SCORE":
+        return "SIGNAL_SCORE", "signal_score"
+
     try:
         if entries and hasattr(entries[0], "score"):
-            return "score"
+            return "LEGACY", "score"
     except Exception:
         pass
-    return "RR"
+    return "LEGACY", "RR"
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -1475,6 +1497,7 @@ def run_once(
     paper: bool = False,
     phase_guard: bool = False,
     cluster_rank_signal_score: bool = False,
+    cluster_score_mode: str = "LEGACY",
 ) -> int:
     # load candles
     if source == "bybit":
@@ -1766,11 +1789,15 @@ def run_once(
     # ============================================================
     dropped_cluster = []
     if entries:
-        cluster_score_field = _resolve_cluster_score_field(
+        cluster_score_mode_resolved, cluster_score_field = _resolve_cluster_score_mode(
             entries,
+            cluster_score_mode=cluster_score_mode,
             cluster_rank_signal_score=cluster_rank_signal_score,
         )
-        print(f"[{now_utc_str()}] [CLUSTER_RANK_MODE] score_field={cluster_score_field}")
+        print(
+            f"[{now_utc_str()}] [CLUSTER_RANK_MODE] "
+            f"score_mode={cluster_score_mode_resolved} score_field={cluster_score_field}"
+        )
         try:
             from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
             entries, dropped_cluster = apply_signal_cluster_filter(
@@ -3512,9 +3539,15 @@ def main():
     # --- DEV4: TTS gate toggle (trend alignment filter for TDP_REENTRY) ---
     p.add_argument("--enable_tts_gate", action="store_true", help="Enable TTS gate for TDP_REENTRY long/short.")
     p.add_argument(
+        "--cluster_score_mode",
+        type=str,
+        default="LEGACY",
+        help="Cluster ranking mode: LEGACY (default) or SIGNAL_SCORE. Invalid values fall back to LEGACY.",
+    )
+    p.add_argument(
         "--cluster_rank_signal_score",
         action="store_true",
-        help="Opt-in: rank cluster-filter candidates by signal_score (fallback to legacy score/RR when missing).",
+        help="Backward-compatible alias for --cluster_score_mode SIGNAL_SCORE.",
     )
 
 
@@ -3794,6 +3827,7 @@ def main():
                 diag_always=args.diag_always,
                 phase_guard=bool(args.phase_guard),
                 cluster_rank_signal_score=bool(getattr(args, "cluster_rank_signal_score", False)),
+                cluster_score_mode=str(getattr(args, "cluster_score_mode", "LEGACY")),
             )
 
         # write aggregated status for dashboard
@@ -3876,6 +3910,7 @@ def main():
                 enable_tts_gate=args.enable_tts_gate,
                 paper=args.paper,
                 cluster_rank_signal_score=bool(getattr(args, "cluster_rank_signal_score", False)),
+                cluster_score_mode=str(getattr(args, "cluster_score_mode", "LEGACY")),
                 )
                 backoff_s = 10
 

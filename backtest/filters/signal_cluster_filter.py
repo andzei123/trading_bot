@@ -186,24 +186,22 @@ def signal_score_value(entry: Any) -> float:
         return 0.0
 
 
-def signal_score_with_fallback(entry: Any) -> float:
-    """Opt-in cluster ranking: prefer signal_score, then score, then RR."""
+def canonical_signal_score(entry: Any, default: float = 0.0) -> float:
+    """Canonical cluster ranking accessor for SIGNAL_SCORE mode.
+
+    Uses only `signal_score`.
+    Missing / null / invalid values fail safe to `default`.
+    """
     try:
         if isinstance(entry, dict):
-            if entry.get("signal_score") is not None:
-                return float(entry.get("signal_score"))
-            if entry.get("score") is not None:
-                return float(entry.get("score"))
+            v = entry.get("signal_score", None)
         else:
-            v_signal = getattr(entry, "signal_score", None)
-            if v_signal is not None:
-                return float(v_signal)
-            v_score = getattr(entry, "score", None)
-            if v_score is not None:
-                return float(v_score)
+            v = getattr(entry, "signal_score", None)
+        if v is None:
+            return float(default)
+        return float(v)
     except Exception:
-        pass
-    return rr_score(entry)
+        return float(default)
 
 
 # ----------------------------
@@ -274,10 +272,11 @@ def apply_signal_cluster_filter(
     phase: Optional[str] = None,
     debug: bool = False,
 ) -> Tuple[List[Any], List[Any]]:
+    score_u = str(score or "").upper()
     score_fn = (
-        signal_score_with_fallback
-        if score.upper() == "SIGNAL_SCORE"
-        else (rr_score if score.upper() == "RR" else (lambda e: model_score_from_meta(e, default=0.0)))
+        canonical_signal_score
+        if score_u == "SIGNAL_SCORE"
+        else (rr_score if score_u == "RR" else (lambda e: model_score_from_meta(e, default=0.0)))
     )
     # Keep `phase` in the wrapper signature for backward compatibility with callers
     # (e.g. live_signal_runner), but do not forward it because
@@ -289,6 +288,6 @@ def apply_signal_cluster_filter(
         max_per_group=max_per_group,
         score_fn=score_fn,
         debug=debug,
-        ranking_source=str(score).upper(),
+        ranking_source=score_u,
     )
     return res.kept, res.dropped
