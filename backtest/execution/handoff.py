@@ -5,6 +5,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from backtest.contracts.models import df_to_execution_intents
+from backtest.observability import reason_codes
 
 
 def handoff_signals(
@@ -46,7 +47,7 @@ def handoff_signals(
     else:
         try:
             diag_log(
-                "POST_EMIT_SKIPPED",
+                reason_codes.POST_EMIT_SKIPPED,
                 symbol=str(bybit_symbol),
                 reason="paper_false_no_post_emit_execution_path",
                 count=int(len(df_e)),
