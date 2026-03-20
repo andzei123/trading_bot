@@ -26,9 +26,11 @@ from backtest.live.context_gate import GateDecision as ContextGateDecision, comp
 from backtest.live.phase_router import decide_phase
 from backtest.live.tts_context import annotate_tts_context, get_tts_context_at
 from backtest.risk.policy_engine import (
+    evaluate_policy_asset,
     evaluate_policy_budget,
     evaluate_policy_corr_cap,
     evaluate_policy_kill_switch,
+    evaluate_policy_portfolio,
     evaluate_policy_sizing,
 )
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
@@ -2868,64 +2870,39 @@ def run_once(
                 print(f"[TRACE] after_emit_last_candles={len(df_e)} cutoff={cutoff} (from {before})")
 
     if not disable_portfolio:
-        try:
-            cfg = _build_portfolio_cfg()
+        portfolio_policy = evaluate_policy_portfolio(
+            df_e,
+            symbol=str(bybit_symbol),
+            risk_guard_status=str(risk_guard_status),
+            risk_guard_action=str(risk_guard_action),
+            portfolio_state_path=str(portfolio_state_path),
+            emit_n=int(emit_n),
+            bybit_interval=bybit_interval,
+            build_portfolio_cfg=_build_portfolio_cfg,
+            load_portfolio_state=_load_portfolio_state,
+            portfolio_state_cls=PortfolioState,
+            filter_signals_portfolio_fn=filter_signals_portfolio,
+        )
+        if portfolio_policy["ok"]:
+            asset_policy = portfolio_policy["asset_policy"]
+            if asset_policy["log"]:
+                print(
+                    f"[{now_utc_str()}] [RISK_GUARD] "
+                    f"{bybit_symbol}: {asset_policy['status']} (action={asset_policy['action']})"
+                )
 
-            # Monthly risk guard (per-symbol). Defaults:
-            # - DEFENSIVE: tighter throttles (still allows signals)
-            # - OFF:      drop all signals for this symbol (if action=off)
-            if risk_guard_status in ("DEFENSIVE", "OFF"):
-                print(f"[{now_utc_str()}] [RISK_GUARD] {bybit_symbol}: {risk_guard_status} (action={risk_guard_action})")
-                if risk_guard_status == "OFF" and str(risk_guard_action).lower() == "off":
-                    # Block all signals for this symbol.
+                if asset_policy["block_new_signals"]:
                     _ensure_live_entries_csv(out_csv)
-                if risk_guard_status == "DEFENSIVE":
-                    # Prop-safe throttles (conservative but keeps signal flow).
-                    cfg.max_signals_per_cycle = min(int(getattr(cfg, "max_signals_per_cycle", 1)), 1)
-                    cfg.per_symbol_cooldown_candles = max(int(getattr(cfg, "per_symbol_cooldown_candles", 0)), 12)
-                    cfg.max_1_signal_per_candle_per_symbol = True
 
-            # If we're backfilling (emit_last_candles > 1), we must not let a "future"
-            # live state block historical timestamps. Use a dedicated state file and
-            # relax throttles so you can observe the raw signal flow.
-            state_path_use = str(portfolio_state_path)
-            if emit_n > 1:
-                if state_path_use.endswith(".json"):
-                    state_path_use = state_path_use[:-5] + "_backfill.json"
-                else:
-                    state_path_use = state_path_use + "_backfill.json"
+            df_e = portfolio_policy["df_e"]
+            state = portfolio_policy["state"]
+            backfill_mode = bool(portfolio_policy["backfill_mode"])
+            before_portfolio = int(portfolio_policy["before_portfolio"])
 
-                # relax throttles for test mode
-                cfg.per_symbol_cooldown_candles = 0
-                cfg.max_1_signal_per_candle_per_symbol = False
-                cfg.max_signals_per_cycle = max(int(getattr(cfg, "max_signals_per_cycle", 1)), len(df_e))
-
-            # IMPORTANT:
-            # In backfill mode (--emit_last_candles > 1) we want to *inspect* a batch of signals
-            # without historical portfolio state blocking older timestamps (negative delta).
-            # So we start from a fresh in-memory state and we do NOT persist it to disk.
-            backfill_mode = emit_n > 1
-            if backfill_mode:
-                state = PortfolioState(state_path_use)  # empty state
-            else:
-                state = _load_portfolio_state(state_path_use)
-
-            # annotate symbol if missing (from runner loop)
-            if "symbol" not in df_e.columns:
-                df_e["symbol"] = bybit_symbol
-
-            before_portfolio = len(df_e)
-            df_e = filter_signals_portfolio(
-                signals_df=df_e,
-                cfg=cfg,
-                state=state,
-                bybit_interval_min=int(bybit_interval),
-            )
             print(f"[POST_REGIME_PORTFOLIO] before={before_portfolio} after={len(df_e)}")
             # Persist portfolio state only in live mode.
             if not backfill_mode:
                 state.save()
-
 
             trace_counts["after_portfolio"] = int(len(df_e))
             _trace(trace_on, f"after_portfolio={len(df_e)}")
@@ -2934,8 +2911,8 @@ def run_once(
                 if debug_regime:
                     print(f"[{now_utc_str()}] [PORTFOLIO] blocked all signals")
                 _ensure_live_entries_csv(out_csv)
-        except Exception as e:
-            print(f"[{now_utc_str()}] Portfolio filter error -> fallback: {e}")
+        else:
+            print(f"[{now_utc_str()}] Portfolio filter error -> fallback: {portfolio_policy['error']}")
 
     # keep only new entries since last state
     # apply only in continuous live loop; skip in --once and backfill/debug

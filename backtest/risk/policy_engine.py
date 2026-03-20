@@ -5,6 +5,124 @@ from typing import Any
 import pandas as pd
 
 
+def evaluate_policy_asset(
+    *,
+    symbol: str,
+    risk_guard_status: str,
+    risk_guard_action: str,
+) -> dict[str, Any]:
+    """
+    Thin wrapper for symbol / asset-specific risk-guard decision.
+
+    EXACT extraction from runner.
+    DO NOT change semantics.
+    """
+    try:
+        status = str(risk_guard_status)
+        action = str(risk_guard_action)
+        status_u = status.upper()
+
+        return {
+            "symbol": str(symbol).upper(),
+            "status": status,
+            "action": action,
+            "log": bool(status_u in ("DEFENSIVE", "OFF")),
+            "block_new_signals": bool(status_u == "OFF" and action.lower() == "off"),
+            "defensive": bool(status_u == "DEFENSIVE"),
+        }
+
+    except Exception:
+        # fail-open — keep runner behavior
+        return {
+            "symbol": str(symbol).upper(),
+            "status": str(risk_guard_status),
+            "action": str(risk_guard_action),
+            "log": False,
+            "block_new_signals": False,
+            "defensive": False,
+        }
+
+def evaluate_policy_portfolio(
+    df_e: pd.DataFrame,
+    *,
+    symbol: str,
+    risk_guard_status: str,
+    risk_guard_action: str,
+    portfolio_state_path: str,
+    emit_n: int,
+    bybit_interval: Any,
+    build_portfolio_cfg: Any,
+    load_portfolio_state: Any,
+    portfolio_state_cls: Any,
+    filter_signals_portfolio_fn: Any,
+) -> dict[str, Any]:
+    """
+    Thin wrapper for runner-owned portfolio policy decision boundary.
+
+    Exact extraction of portfolio-level allow/block/throttle setup.
+    DO NOT change semantics.
+    """
+    try:
+        cfg = build_portfolio_cfg()
+
+        asset_policy = evaluate_policy_asset(
+            symbol=str(symbol),
+            risk_guard_status=str(risk_guard_status),
+            risk_guard_action=str(risk_guard_action),
+        )
+
+        if asset_policy["defensive"]:
+            cfg.max_signals_per_cycle = min(int(getattr(cfg, "max_signals_per_cycle", 1)), 1)
+            cfg.per_symbol_cooldown_candles = max(int(getattr(cfg, "per_symbol_cooldown_candles", 0)), 12)
+            cfg.max_1_signal_per_candle_per_symbol = True
+
+        state_path_use = str(portfolio_state_path)
+        if emit_n > 1:
+            if state_path_use.endswith(".json"):
+                state_path_use = state_path_use[:-5] + "_backfill.json"
+            else:
+                state_path_use = state_path_use + "_backfill.json"
+
+            cfg.per_symbol_cooldown_candles = 0
+            cfg.max_1_signal_per_candle_per_symbol = False
+            cfg.max_signals_per_cycle = max(int(getattr(cfg, "max_signals_per_cycle", 1)), len(df_e))
+
+        backfill_mode = emit_n > 1
+        if backfill_mode:
+            state = portfolio_state_cls(state_path_use)
+        else:
+            state = load_portfolio_state(state_path_use)
+
+        if "symbol" not in df_e.columns:
+            df_e = df_e.copy()
+            df_e["symbol"] = symbol
+
+        before_portfolio = len(df_e)
+        df_e = filter_signals_portfolio_fn(
+            signals_df=df_e,
+            cfg=cfg,
+            state=state,
+            bybit_interval_min=int(bybit_interval),
+        )
+
+        return {
+            "ok": True,
+            "df_e": df_e,
+            "cfg": cfg,
+            "asset_policy": asset_policy,
+            "state": state,
+            "backfill_mode": bool(backfill_mode),
+            "state_path_use": str(state_path_use),
+            "before_portfolio": int(before_portfolio),
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+        }
+
+
+
 def evaluate_policy_kill_switch(
     *,
     symbol: str,
