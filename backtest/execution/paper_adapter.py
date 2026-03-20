@@ -29,6 +29,7 @@ def run_paper_adapter(
         )
 
         from backtest.journal.paper_executor import run_paper_executor  # type: ignore
+        from backtest.observability.decision_log import decision_log
 
         signals_path = Path("backtest/journal/exports_live/signals_live.csv")
         signals_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +99,8 @@ def run_paper_adapter(
                             ]
                             if not _df_new_open.empty:
                                 _r = _df_new_open.iloc[-1]
-                                diag_log(
+                                decision_log(
+                                    diag_log,
                                     "TRADE_OPENED",
                                     symbol=_r.get("symbol"),
                                     model=_r.get("model"),
