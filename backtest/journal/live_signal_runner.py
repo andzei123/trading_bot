@@ -35,6 +35,7 @@ from backtest.risk.policy_engine import (
     evaluate_policy_portfolio,
     evaluate_policy_sizing,
 )
+from backtest.execution.idempotency import enforce_idempotency
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.policy_engine import evaluate_policy_budget, evaluate_policy_corr_cap
@@ -2919,11 +2920,13 @@ def run_once(
     # keep only new entries since last state
     # apply only in continuous live loop; skip in --once and backfill/debug
     before_last_seen = len(df_e)
-    last_ts = None
-    if (not once) and emit_last_candles == 0 and os.getenv("BYPASS_LAST_SEEN", "0") != "1":
-        last_ts = _read_state(state_path)
-        df_e["signal_ts"] = pd.to_datetime(df_e["signal_ts"], utc=True, errors="coerce")
-        df_e = df_e[df_e["signal_ts"] > last_ts].copy()
+    df_e, last_ts = enforce_idempotency(
+        df_e,
+        once=once,
+        emit_last_candles=emit_last_candles,
+        state_path=state_path,
+        read_state_fn=_read_state,
+    )
     print(
         f"[POST_REGIME_LAST_SEEN] before={before_last_seen} after={len(df_e)} "
         f"last_ts={last_ts}"
