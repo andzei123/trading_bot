@@ -19,6 +19,8 @@ import requests
 from backtest.runtime.context_builder import build_context
 from backtest.strategy.macro.service import evaluate_macro
 from backtest.strategy.router.router import route_phase, route_model
+from backtest.execution.signal_emitter import emit_signals
+from backtest.execution.handoff import handoff_signals
 from backtest.metrics.equity_curve_tracker import update_equity_curve_from_trades
 from backtest.live.regime_controller import decide_profile_from_performance
 from backtest.live.liquidation import start_liquidation_stream, get_liquidation_context_sync, get_liquidation_features_sync
@@ -3026,22 +3028,18 @@ def run_once(
     # ============================================================
     # WRITE live entries CSV (stable schema)
     # ============================================================
-    try:
-        _ensure_live_entries_csv(out_csv)
-        df_out = df_e.copy()
-        # Ensure stable schema (columns + dtypes)
-        for _c, _dtype in LIVE_ENTRIES_DTYPES.items():
-            if _c not in df_out.columns:
-                df_out[_c] = pd.Series(dtype=_dtype)
-        df_out = df_out.reindex(columns=LIVE_ENTRIES_COLUMNS)
-        try:
-            for _, _row in df_out.iterrows():
-                diag_log("SETUP_EMITTED", **_diag_payload_from_row(_row, symbol=str(bybit_symbol)))
-        except Exception:
-            pass
-        _append_csv(out_csv, df_out)
-    except Exception as _e:
-        print(f"[{now_utc_str()}] [LIVE_ENTRIES][WARN] write failed: {repr(_e)}")
+    emit_signals(
+        df_e=df_e,
+        out_csv=out_csv,
+        bybit_symbol=str(bybit_symbol),
+        live_entries_columns=LIVE_ENTRIES_COLUMNS,
+        live_entries_dtypes=LIVE_ENTRIES_DTYPES,
+        ensure_live_entries_csv=_ensure_live_entries_csv,
+        append_csv=_append_csv,
+        diag_log=diag_log,
+        diag_payload_from_row=_diag_payload_from_row,
+        now_utc_str=now_utc_str,
+    )
 
     try:
         diag_log(
@@ -3054,113 +3052,16 @@ def run_once(
     except Exception:
         pass
 
-    # ============================================================
-    # ============================================================
-    # PAPER mode: maintain signals_live.csv + paper_trades.csv
-    # ============================================================
-    if paper:
-        try:
-            diag_log(
-                "POST_EMIT_CALL_EXECUTION",
-                symbol=str(bybit_symbol),
-                count=int(len(df_e)),
-                mode="paper",
-            )
-            from backtest.journal.paper_executor import run_paper_executor  # type: ignore
-
-            signals_path = Path("backtest/journal/exports_live/signals_live.csv")
-            signals_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Stable schema for paper bridge (signals -> paper_trades)
-            SIGNALS_COLS = [
-                "timestamp", "signal_ts", "symbol", "model", "side",
-                "entry", "sl", "tp", "rr",
-                "ctx_sub_label", "phase", "regime", "trend_dir",
-                "status",
-            ]
-
-            df_sig = df_e.copy()
-
-            # Ensure mandatory columns exist
-            if "signal_ts" not in df_sig.columns:
-                df_sig["signal_ts"] = pd.to_datetime(latest_ts, utc=True, errors="coerce")
-            else:
-                df_sig["signal_ts"] = pd.to_datetime(df_sig["signal_ts"], utc=True, errors="coerce").fillna(
-                    pd.to_datetime(latest_ts, utc=True, errors="coerce")
-                )
-
-            df_sig["symbol"] = str(bybit_symbol)
-
-            if "rr" not in df_sig.columns:
-                df_sig["rr"] = float(rr) if rr is not None else np.nan
-
-            if "status" not in df_sig.columns:
-                df_sig["status"] = "NEW"
-            else:
-                df_sig["status"] = df_sig["status"].replace("", "NEW").fillna("NEW")
-
-            for c in SIGNALS_COLS:
-                if c not in df_sig.columns:
-                    df_sig[c] = np.nan
-
-            df_sig = df_sig.reindex(columns=SIGNALS_COLS)
-
-            # Overwrite snapshot (paper executor reads latest rows)
-            if df_sig is None or df_sig.empty:
-                # Keep deterministic files, but don't spam-run executor with empty signals.
-                if not Path(signals_path).exists():
-                    pd.DataFrame(columns=SIGNALS_COLS).to_csv(signals_path, index=False)
-            else:
-                df_sig.to_csv(signals_path, index=False)
-                print(f"[{now_utc_str()}] Wrote {len(df_sig)} entries -> {signals_path}")
-
-                _paper_trades_path = Path("backtest/journal/exports_live/paper_trades.csv")
-                _paper_before_n = 0
-                try:
-                    if _paper_trades_path.exists() and _paper_trades_path.stat().st_size > 0:
-                        _df_before = pd.read_csv(_paper_trades_path, engine="python", on_bad_lines="skip")
-                        _paper_before_n = len(_df_before)
-                except Exception:
-                    _paper_before_n = 0
-
-                run_paper_executor(
-                    in_csv=str(signals_path),
-                    out_csv=str(_paper_trades_path),
-                )
-
-                try:
-                    if _paper_trades_path.exists() and _paper_trades_path.stat().st_size > 0:
-                        _df_after = pd.read_csv(_paper_trades_path, engine="python", on_bad_lines="skip")
-                        if len(_df_after) > _paper_before_n:
-                            _df_new = _df_after.iloc[_paper_before_n:].copy()
-                            if "status" in _df_new.columns:
-                                _df_new_open = _df_new[_df_new["status"].astype(str).str.upper() == "OPEN"]
-                                if not _df_new_open.empty:
-                                    _r = _df_new_open.iloc[-1]
-                                    diag_log(
-                                        "TRADE_OPENED",
-                                        symbol=_r.get("symbol"),
-                                        model=_r.get("model"),
-                                        entry=_r.get("entry"),
-                                        tp=_r.get("tp"),
-                                        sl=_r.get("sl"),
-                                        mode="paper",
-                                    )
-                except Exception:
-                    pass
-        except Exception as _e:
-            print(f"[{now_utc_str()}] [PAPER][WARN] {repr(_e)}")
-    else:
-        try:
-            diag_log(
-                "POST_EMIT_SKIPPED",
-                symbol=str(bybit_symbol),
-                reason="paper_false_no_post_emit_execution_path",
-                count=int(len(df_e)),
-                once=bool(once),
-            )
-        except Exception:
-            pass
+    handoff_signals(
+        df_e=df_e,
+        paper=paper,
+        bybit_symbol=str(bybit_symbol),
+        latest_ts=latest_ts,
+        rr=rr,
+        once=once,
+        diag_log=diag_log,
+        now_utc_str=now_utc_str,
+    )
 
     # ------------------------------------------------------------
     # DEV3 (SPRINT-3 STEP-1): Equity Curve Tracker (drawdown source of truth)
