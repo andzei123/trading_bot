@@ -33,6 +33,15 @@ class RiskDecision:
     risk_multiplier: float
 
 
+@dataclass
+class MarketContext:
+    symbol: str
+    regime: str
+    phase: str
+    macro_bias: str
+    trend_dir: str
+
+
 # ✅ STAGE 5 / STEP 5 — NEW DTO
 @dataclass
 class MacroDecision:
@@ -143,6 +152,27 @@ def df_to_macro_decisions(
                 regime=str(row.get("regime", "")),
                 macro_bias=str(row.get("macro_bias", "")),
                 allow=bool(row.get("context_allow", True)),
+            )
+        )
+
+    return out
+
+
+def df_to_market_contexts(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+) -> list[MarketContext]:
+    out: list[MarketContext] = []
+
+    for _, row in df.iterrows():
+        out.append(
+            MarketContext(
+                symbol=str(row.get("symbol", symbol)),
+                regime=str(row.get("regime", "")),
+                phase=str(row.get("phase", "")),
+                macro_bias=str(row.get("macro_bias", "")),
+                trend_dir=str(row.get("trend_dir", "")),
             )
         )
 

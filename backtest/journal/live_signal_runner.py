@@ -38,9 +38,10 @@ from backtest.risk.policy_engine import (
 from backtest.execution.idempotency import enforce_idempotency
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 try:
-    from backtest.contracts.models import df_to_macro_decisions, df_to_risk_decisions, df_to_router_decisions
+    from backtest.contracts.models import df_to_macro_decisions, df_to_market_contexts, df_to_risk_decisions, df_to_router_decisions
 except Exception:
     df_to_macro_decisions = None  # type: ignore
+    df_to_market_contexts = None  # type: ignore
     df_to_risk_decisions = None  # type: ignore
     df_to_router_decisions = None  # type: ignore
 
@@ -2691,6 +2692,16 @@ def run_once(
 
     except Exception as _pe:
         print(f"[{now_utc_str()}] [PHASE][{bybit_symbol}] skip (error={repr(_pe)})")
+
+    # ============================================================
+    # STAGE 5 / STEP 6: MarketContext DTO adapter (no-op, fail-open)
+    # Contract-only adapter; no logic / behavior changes.
+    # ============================================================
+    try:
+        if df_to_market_contexts is not None:
+            _ = df_to_market_contexts(df_e, symbol=str(bybit_symbol))
+    except Exception:
+        pass
 
 # Filtravimas pagal decision (RegimeDecision = vienas šaltinis)
     # ============================================================
