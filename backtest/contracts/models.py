@@ -17,6 +17,18 @@ class EntryCandidate:
     rr: Any
 
 
+@dataclass
+class ExecutionIntent:
+    symbol: str
+    model: str
+    side: str
+    entry: Any
+    sl: Any
+    tp: Any
+    rr: Any
+    mode: str
+
+
 def df_to_entry_candidates(
     df: pd.DataFrame,
     *,
@@ -45,3 +57,46 @@ def df_to_entry_candidates(
         )
 
     return out
+
+
+def entry_candidate_to_execution_intent(
+    candidate: EntryCandidate,
+    *,
+    mode: str,
+) -> ExecutionIntent:
+    """
+    Narrow adapter only:
+    - no filtering
+    - no scoring
+    - no policy
+    - no mutation
+    """
+    return ExecutionIntent(
+        symbol=str(candidate.symbol),
+        model=str(candidate.model),
+        side=str(candidate.side),
+        entry=candidate.entry,
+        sl=candidate.sl,
+        tp=candidate.tp,
+        rr=candidate.rr,
+        mode=str(mode),
+    )
+
+
+def df_to_execution_intents(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+    mode: str,
+) -> list[ExecutionIntent]:
+    """
+    Narrow adapter only:
+    - no filtering
+    - no scoring
+    - no policy
+    - no mutation
+    """
+    return [
+        entry_candidate_to_execution_intent(candidate, mode=mode)
+        for candidate in df_to_entry_candidates(df, symbol=symbol)
+    ]

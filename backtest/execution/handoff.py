@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from backtest.contracts.models import df_to_entry_candidates
+from backtest.contracts.models import df_to_execution_intents
 
 
 def handoff_signals(
@@ -20,12 +20,13 @@ def handoff_signals(
 ) -> None:
     if paper:
         try:
-            # Stage 5 / Step 1:
+            # Stage 5 / Step 2:
             # narrow, fail-open contract shaping only
             try:
-                _ = df_to_entry_candidates(
+                _ = df_to_execution_intents(
                     df_e,
                     symbol=bybit_symbol,
+                    mode="paper",
                 )
             except Exception:
                 pass
