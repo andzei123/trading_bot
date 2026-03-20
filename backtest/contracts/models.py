@@ -17,8 +17,6 @@ class EntryCandidate:
     rr: Any
 
 
-
-
 @dataclass
 class RouterDecision:
     symbol: str
@@ -33,6 +31,15 @@ class RiskDecision:
     allow: bool
     reason: str
     risk_multiplier: float
+
+
+# ✅ STAGE 5 / STEP 5 — NEW DTO
+@dataclass
+class MacroDecision:
+    symbol: str
+    regime: str
+    macro_bias: str
+    allow: bool
 
 
 @dataclass
@@ -52,13 +59,6 @@ def df_to_entry_candidates(
     *,
     symbol: str,
 ) -> list[EntryCandidate]:
-    """
-    Narrow adapter only:
-    - no filtering
-    - no scoring
-    - no policy
-    - no mutation
-    """
     out: list[EntryCandidate] = []
 
     for _, row in df.iterrows():
@@ -82,13 +82,6 @@ def entry_candidate_to_execution_intent(
     *,
     mode: str,
 ) -> ExecutionIntent:
-    """
-    Narrow adapter only:
-    - no filtering
-    - no scoring
-    - no policy
-    - no mutation
-    """
     return ExecutionIntent(
         symbol=str(candidate.symbol),
         model=str(candidate.model),
@@ -107,13 +100,6 @@ def df_to_execution_intents(
     symbol: str,
     mode: str,
 ) -> list[ExecutionIntent]:
-    """
-    Narrow adapter only:
-    - no filtering
-    - no scoring
-    - no policy
-    - no mutation
-    """
     return [
         entry_candidate_to_execution_intent(candidate, mode=mode)
         for candidate in df_to_entry_candidates(df, symbol=symbol)
@@ -127,13 +113,6 @@ def df_to_router_decisions(
     phase: str,
     trend_dir: str,
 ) -> list[RouterDecision]:
-    """
-    Narrow adapter only:
-    - no filtering
-    - no scoring
-    - no policy
-    - no mutation
-    """
     out: list[RouterDecision] = []
 
     for _, row in df.iterrows():
@@ -148,18 +127,33 @@ def df_to_router_decisions(
 
     return out
 
+
+# ✅ STAGE 5 / STEP 5 — PURE ADAPTER
+def df_to_macro_decisions(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+) -> list[MacroDecision]:
+    out: list[MacroDecision] = []
+
+    for _, row in df.iterrows():
+        out.append(
+            MacroDecision(
+                symbol=str(row.get("symbol", symbol)),
+                regime=str(row.get("regime", "")),
+                macro_bias=str(row.get("macro_bias", "")),
+                allow=bool(row.get("context_allow", True)),
+            )
+        )
+
+    return out
+
+
 def df_to_risk_decisions(
     df: pd.DataFrame,
     *,
     symbol: str,
 ) -> list[RiskDecision]:
-    """
-    Narrow adapter only:
-    - no filtering
-    - no scoring
-    - no policy
-    - no mutation
-    """
     out: list[RiskDecision] = []
 
     for _, row in df.iterrows():

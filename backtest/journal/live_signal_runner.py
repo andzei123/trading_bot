@@ -38,8 +38,9 @@ from backtest.risk.policy_engine import (
 from backtest.execution.idempotency import enforce_idempotency
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 try:
-    from backtest.contracts.models import df_to_risk_decisions, df_to_router_decisions
+    from backtest.contracts.models import df_to_macro_decisions, df_to_risk_decisions, df_to_router_decisions
 except Exception:
+    df_to_macro_decisions = None  # type: ignore
     df_to_risk_decisions = None  # type: ignore
     df_to_router_decisions = None  # type: ignore
 
@@ -3048,7 +3049,15 @@ def run_once(
         df_e["timestamp"] = pd.to_datetime(df_e["setup_ts"], utc=True, errors="coerce")
         df_e = df_e.drop(columns=["setup_ts"])
 
-
+    # ============================================================
+    # STAGE 5 / STEP 5: MacroDecision DTO adapter (no-op, fail-open)
+    # Contract-only adapter; no logic / behavior changes.
+    # ============================================================
+    try:
+        if df_to_macro_decisions is not None:
+            _ = df_to_macro_decisions(df_e, symbol=str(bybit_symbol))
+    except Exception:
+        pass
 
     # ============================================================
     # STAGE 5 / STEP 3: RiskDecision DTO adapter (no-op, fail-open)
