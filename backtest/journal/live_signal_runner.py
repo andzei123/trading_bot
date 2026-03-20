@@ -38,9 +38,10 @@ from backtest.risk.policy_engine import (
 from backtest.execution.idempotency import enforce_idempotency
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 try:
-    from backtest.contracts.models import df_to_risk_decisions
+    from backtest.contracts.models import df_to_risk_decisions, df_to_router_decisions
 except Exception:
     df_to_risk_decisions = None  # type: ignore
+    df_to_router_decisions = None  # type: ignore
 
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.policy_engine import evaluate_policy_budget, evaluate_policy_corr_cap
@@ -1954,6 +1955,20 @@ def run_once(
     try:
         for _, _setup_row in df_e.iterrows():
             diag_log("SETUP_CREATED", **_diag_payload_from_row(_setup_row, symbol=str(bybit_symbol)))
+    except Exception:
+        pass
+    # ============================================================
+    # STAGE 5 / STEP 4: RouterDecision DTO adapter (no-op, fail-open)
+    # Router-layer contract only; no logic / behavior changes.
+    # ============================================================
+    try:
+        if df_to_router_decisions is not None:
+            _ = df_to_router_decisions(
+                df_e,
+                symbol=str(bybit_symbol),
+                phase=str(phase_scalar),
+                trend_dir=str(tdir or ""),
+            )
     except Exception:
         pass
     # --- DEV2 DF safety: schema guard for empty/no-column cycles ---

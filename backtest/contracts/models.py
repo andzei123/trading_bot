@@ -20,6 +20,14 @@ class EntryCandidate:
 
 
 @dataclass
+class RouterDecision:
+    symbol: str
+    phase: str
+    trend_dir: str
+    model_hint: str
+
+
+@dataclass
 class RiskDecision:
     symbol: str
     allow: bool
@@ -110,6 +118,35 @@ def df_to_execution_intents(
         entry_candidate_to_execution_intent(candidate, mode=mode)
         for candidate in df_to_entry_candidates(df, symbol=symbol)
     ]
+
+
+def df_to_router_decisions(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+    phase: str,
+    trend_dir: str,
+) -> list[RouterDecision]:
+    """
+    Narrow adapter only:
+    - no filtering
+    - no scoring
+    - no policy
+    - no mutation
+    """
+    out: list[RouterDecision] = []
+
+    for _, row in df.iterrows():
+        out.append(
+            RouterDecision(
+                symbol=str(row.get("symbol", symbol)),
+                phase=str(row.get("phase", phase)),
+                trend_dir=str(row.get("trend_dir", trend_dir or "")),
+                model_hint=str(row.get("model", "")),
+            )
+        )
+
+    return out
 
 def df_to_risk_decisions(
     df: pd.DataFrame,
