@@ -17,6 +17,16 @@ class EntryCandidate:
     rr: Any
 
 
+
+
+@dataclass
+class RiskDecision:
+    symbol: str
+    allow: bool
+    reason: str
+    risk_multiplier: float
+
+
 @dataclass
 class ExecutionIntent:
     symbol: str
@@ -100,3 +110,29 @@ def df_to_execution_intents(
         entry_candidate_to_execution_intent(candidate, mode=mode)
         for candidate in df_to_entry_candidates(df, symbol=symbol)
     ]
+
+def df_to_risk_decisions(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+) -> list[RiskDecision]:
+    """
+    Narrow adapter only:
+    - no filtering
+    - no scoring
+    - no policy
+    - no mutation
+    """
+    out: list[RiskDecision] = []
+
+    for _, row in df.iterrows():
+        out.append(
+            RiskDecision(
+                symbol=str(row.get("symbol", symbol)),
+                allow=bool(row.get("context_allow", True)),
+                reason=str(row.get("block_reason", "")),
+                risk_multiplier=row.get("risk_multiplier", 1.0),
+            )
+        )
+
+    return out

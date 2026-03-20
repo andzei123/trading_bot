@@ -37,6 +37,11 @@ from backtest.risk.policy_engine import (
 )
 from backtest.execution.idempotency import enforce_idempotency
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
+try:
+    from backtest.contracts.models import df_to_risk_decisions
+except Exception:
+    df_to_risk_decisions = None  # type: ignore
+
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.risk.policy_engine import evaluate_policy_budget, evaluate_policy_corr_cap
 # DEV A (PHASE2): PYRAMID bootstrap telemetry (no side-effects, fail-open)
@@ -3027,6 +3032,18 @@ def run_once(
     if "setup_ts" in df_e.columns:
         df_e["timestamp"] = pd.to_datetime(df_e["setup_ts"], utc=True, errors="coerce")
         df_e = df_e.drop(columns=["setup_ts"])
+
+
+
+    # ============================================================
+    # STAGE 5 / STEP 3: RiskDecision DTO adapter (no-op, fail-open)
+    # Policy-layer contract only; no logic / behavior changes.
+    # ============================================================
+    try:
+        if df_to_risk_decisions is not None:
+            _ = df_to_risk_decisions(df_e, symbol=str(bybit_symbol))
+    except Exception:
+        pass
 
     # ============================================================
     # WRITE live entries CSV (stable schema)
