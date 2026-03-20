@@ -29,7 +29,10 @@ def run_paper_adapter(
         )
 
         from backtest.journal.paper_executor import run_paper_executor  # type: ignore
-        from backtest.observability.decision_log import decision_log
+        from backtest.observability.decision_log import (
+            decision_log,
+            build_trade_opened_payload,
+        )
 
         signals_path = Path("backtest/journal/exports_live/signals_live.csv")
         signals_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,15 +102,19 @@ def run_paper_adapter(
                             ]
                             if not _df_new_open.empty:
                                 _r = _df_new_open.iloc[-1]
-                                decision_log(
-                                    diag_log,
-                                    "TRADE_OPENED",
+                                payload = build_trade_opened_payload(
                                     symbol=_r.get("symbol"),
                                     model=_r.get("model"),
                                     entry=_r.get("entry"),
                                     tp=_r.get("tp"),
                                     sl=_r.get("sl"),
                                     mode="paper",
+                                )
+
+                                decision_log(
+                                    diag_log,
+                                    "TRADE_OPENED",
+                                    **payload,
                                 )
             except Exception:
                 pass

@@ -3,6 +3,25 @@ from __future__ import annotations
 from typing import Any, Callable
 
 
+def build_trade_opened_payload(
+    *,
+    symbol: str,
+    model: str,
+    entry: float | None,
+    tp: float | None,
+    sl: float | None,
+    mode: str,
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "model": model,
+        "entry": entry,
+        "tp": tp,
+        "sl": sl,
+        "mode": mode,
+    }
+
+
 def decision_log(
     diag_log: Callable[..., None],
     event: str,
