@@ -1,0 +1,6 @@
+cycle_ts,latest_ts,source,interval_min,symbols,once,new_candle,note,raw_entries,kept_after_invalidation,dropped_invalidation,kept_after_live_guard,dropped_live_guard,kept_after_window,after_context,after_regime,after_emit_last_candles,written_entries,written_closed,written_dropped
+2026-03-21 17:20:56,2026-03-21 17:15:00+00:00,bybit,15,BTCUSDT,True,True,,30,3,0,,,,3,3,,1,,
+2026-03-21 17:20:58,2026-03-21 17:15:00+00:00,bybit,15,ETHUSDT,True,True,,13,3,0,,,,3,3,,3,,
+2026-03-21 17:20:59,2026-03-21 17:15:00+00:00,bybit,15,SOLUSDT,True,True,,12,3,0,,,,3,3,,3,,
+2026-03-21 17:21:00,2026-03-21 17:15:00+00:00,bybit,15,XRPUSDT,True,True,,70,3,0,,,,3,3,,3,,
+2026-03-21 17:21:01,2026-03-21 17:15:00+00:00,bybit,15,BNBUSDT,True,True,,26,3,0,,,,3,3,,3,,

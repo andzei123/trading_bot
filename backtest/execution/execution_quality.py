@@ -6,6 +6,11 @@ and a 0..1 quality score.
 Fail-open contract:
 - If candles are missing -> exec_quality_score=1.0 (caller should still wrap in try/except).
 - Orderbook is optional; when missing, candles proxy is used.
+
+Stage-0 deterministic policy:
+- Candle-derived execution quality never uses the live tail candle.
+- When at least 2 candles are available, the last fully closed candle is cdf.iloc[-2].
+- Spread / liquidity / ATR keep the same formulas; only candle selection is stabilized.
 """
 
 from __future__ import annotations
@@ -88,8 +93,8 @@ def estimate_execution_quality(
         out["exec_quality_score"] = 1.0
         out["timestamp_utc"] = pd.Timestamp.utcnow()
         return out[[
-            "timestamp_utc","symbol","model","side",
-            "spread_bps","slippage_bps_est","liq_score","exec_quality_score",
+            "timestamp_utc", "symbol", "model", "side",
+            "spread_bps", "slippage_bps_est", "liq_score", "exec_quality_score",
         ]]
 
     cdf = candles_df.copy()
@@ -99,27 +104,56 @@ def estimate_execution_quality(
     except Exception:
         pass
 
-    last_close = _safe_float(cdf["close"].iloc[-1] if "close" in cdf.columns and len(cdf) else 0.0, 0.0)
-    last_high = _safe_float(cdf["high"].iloc[-1] if "high" in cdf.columns and len(cdf) else last_close, last_close)
-    last_low = _safe_float(cdf["low"].iloc[-1] if "low" in cdf.columns and len(cdf) else last_close, last_close)
-    last_vol = _safe_float(cdf["volume"].iloc[-1] if "volume" in cdf.columns and len(cdf) else 0.0, 0.0)
+    # Deterministic candle policy: use last fully closed candle instead of the live tail candle.
+    used_closed_candle_policy = False
+    candle_row_idx = -1
+    cdf_for_exec = cdf
+    if len(cdf) >= 2:
+        cdf_for_exec = cdf.iloc[:-1].copy()
+        used_closed_candle_policy = True
+        candle_row_idx = len(cdf_for_exec) - 1
+    elif len(cdf) == 1:
+        cdf_for_exec = cdf.copy()
+        candle_row_idx = 0
 
-    # Spread proxy (prefer orderbook)
+    used_candle_ts = None
+    try:
+        if "timestamp" in cdf_for_exec.columns and len(cdf_for_exec):
+            _ts = cdf_for_exec["timestamp"].iloc[-1]
+            used_candle_ts = "" if pd.isna(_ts) else str(_ts)
+    except Exception:
+        used_candle_ts = None
+
+    last_close = _safe_float(cdf_for_exec["close"].iloc[-1] if "close" in cdf_for_exec.columns and len(cdf_for_exec) else 0.0, 0.0)
+    last_high = _safe_float(cdf_for_exec["high"].iloc[-1] if "high" in cdf_for_exec.columns and len(cdf_for_exec) else last_close, last_close)
+    last_low = _safe_float(cdf_for_exec["low"].iloc[-1] if "low" in cdf_for_exec.columns and len(cdf_for_exec) else last_close, last_close)
+    last_vol = _safe_float(cdf_for_exec["volume"].iloc[-1] if "volume" in cdf_for_exec.columns and len(cdf_for_exec) else 0.0, 0.0)
+
+    # Stage-0.1 deterministic policy:
+    # Do not use live orderbook snapshots for execution-quality scoring.
+    # The live top-of-book is inherently mutable across identical --once runs.
+    # For strict determinism at this layer, execution quality is always derived
+    # from the last fully closed candle. We still log incoming bid/ask for audit.
     spread_bps = 0.0
     used_orderbook = False
+    orderbook_present = False
+    orderbook_ignored_by_policy = False
+    bid = 0.0
+    ask = 0.0
+    mid = 0.0
     try:
         if orderbook_snapshot:
+            orderbook_present = True
             bid = orderbook_snapshot.get("bid", orderbook_snapshot.get("best_bid", None))
             ask = orderbook_snapshot.get("ask", orderbook_snapshot.get("best_ask", None))
             bid = _safe_float(bid, 0.0)
             ask = _safe_float(ask, 0.0)
             if bid > 0 and ask > 0 and ask >= bid:
                 mid = (bid + ask) / 2.0
-                if mid > 0:
-                    spread_bps = (ask - bid) / mid * 10_000.0
-                    used_orderbook = True
+                orderbook_ignored_by_policy = True
     except Exception:
-        used_orderbook = False
+        orderbook_present = False
+        orderbook_ignored_by_policy = False
 
     if not used_orderbook:
         if last_close > 0:
@@ -128,7 +162,7 @@ def estimate_execution_quality(
         else:
             spread_bps = 0.0
 
-    atr_pct = _compute_atr_pct(cdf, period=14)
+    atr_pct = _compute_atr_pct(cdf_for_exec, period=14)
     atr_bps = float(atr_pct * 10_000.0)
 
     # Liquidity proxy from notional volume (log-scaled 0..1)
@@ -141,6 +175,50 @@ def estimate_execution_quality(
     cost_pen = _clip01(cost_bps / 100.0)
     exec_quality_score = _clip01(1.0 - 0.75 * cost_pen - 0.25 * (1.0 - liq_score))
 
+    _btc = out[out["symbol"].astype(str) == "BTCUSDT"].head(1)
+    if len(_btc):
+        _r = _btc.iloc[0]
+        print(
+            "[EXEC_CANDLE_POLICY] "
+            f"symbol={_r.get('symbol','')} "
+            f"model={_r.get('model','')} "
+            f"side={_r.get('side','')} "
+            f"used_orderbook={used_orderbook} "
+            f"orderbook_present={orderbook_present} "
+            f"orderbook_ignored_by_policy={orderbook_ignored_by_policy} "
+            f"used_closed_candle_policy={used_closed_candle_policy} "
+            f"candle_row_idx={candle_row_idx} "
+            f"candle_ts={used_candle_ts} "
+            f"last_close={last_close:.10f} "
+            f"last_high={last_high:.10f} "
+            f"last_low={last_low:.10f} "
+            f"last_volume={last_vol:.10f} "
+            f"spread_bps={spread_bps:.10f} "
+            f"slippage_bps_est={slippage_bps_est:.10f} "
+            f"exec_quality_score={exec_quality_score:.10f}"
+        )
+
+
+
+    _dbg = out.head(1)
+    if len(_dbg):
+        _r = _dbg.iloc[0]
+        print(
+            "[EXEC_DEBUG_FULL] "
+            f"symbol={_r.get('symbol','')} "
+            f"model={_r.get('model','')} "
+            f"side={_r.get('side','')} "
+            f"last_close={last_close:.10f} "
+            f"last_high={last_high:.10f} "
+            f"last_low={last_low:.10f} "
+            f"last_volume={last_vol:.10f} "
+            f"spread_bps={spread_bps:.10f} "
+            f"slippage_bps_est={slippage_bps_est:.10f} "
+            f"liq_score={liq_score:.10f} "
+            f"cost_bps={cost_bps:.10f} "
+            f"exec_quality_score={exec_quality_score:.10f}"
+        )
+
     out["spread_bps"] = float(spread_bps)
     out["slippage_bps_est"] = float(slippage_bps_est)
     out["liq_score"] = float(liq_score)
@@ -148,6 +226,6 @@ def estimate_execution_quality(
     out["timestamp_utc"] = pd.Timestamp.utcnow()
 
     return out[[
-        "timestamp_utc","symbol","model","side",
-        "spread_bps","slippage_bps_est","liq_score","exec_quality_score",
+        "timestamp_utc", "symbol", "model", "side",
+        "spread_bps", "slippage_bps_est", "liq_score", "exec_quality_score",
     ]]
