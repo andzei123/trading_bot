@@ -1,2 +1,0 @@
-timestamp,model,side,entry,sl,tp,meta,ctx_sub_label,regime,trend_dir,trend_strength,atr_pct,phase
-2025-12-05 17:00:00+00:00,TDP_REENTRY,LONG,88713.3,87828.13035714286,90483.6392857143,TDP_BOT sweep->reclaim (setup_i=1412),TDP_BOT,TREND_UP,UP,0.0077068244072851,0.0160534989607362,PHASE_TREND_UP

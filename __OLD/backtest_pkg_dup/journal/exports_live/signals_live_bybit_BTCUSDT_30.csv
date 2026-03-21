@@ -1,2 +1,0 @@
-timestamp,model,side,entry,sl,tp,meta,ctx_sub_label,regime,trend_dir,trend_strength,atr_pct,phase
-2026-01-05 20:00:00+00:00,TDP_REENTRY,SHORT,94681.0,94888.9232142857,94265.15357142859,TDP_TOP trend continuation,TDP_TOP,TREND_DOWN,DOWN,0.0123054256556967,0.0161126828590564,PHASE_TREND_DOWN
