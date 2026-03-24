@@ -31,7 +31,7 @@ from backtest.live_pipeline.pipeline_core import run_pipeline_once
 from backtest.metrics.equity_curve_tracker import update_equity_curve_from_trades
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 from backtest.portfolio.portfolio_exposure import load_portfolio_exposure
-
+from backtest.utils.wait_confirmation import apply_wait_confirmation
 
 def _parse_dt(s: str) -> pd.Timestamp:
     """Accept YYYY-MM-DD or ISO; always returns UTC timestamp."""
@@ -116,6 +116,9 @@ def _ensure_trades_header(path: Path) -> None:
                 "sl",
                 "tp",
                 "rr",
+                "R",
+                "phase",
+                "regime",
                 "score",
                 "notes",
                 "outcome",
@@ -143,6 +146,9 @@ def _append_trade(path: Path, row: Dict) -> None:
         "sl",
         "tp",
         "rr",
+        "R",
+        "phase",
+        "regime",
         "score",
         "notes",
         "outcome",
@@ -171,6 +177,9 @@ def _append_trade(path: Path, row: Dict) -> None:
             "sl": row.get("sl"),
             "tp": row.get("tp"),
             "rr": row.get("rr"),
+            "R": row.get("R"),
+            "phase": row.get("phase"),
+            "regime": row.get("regime"),
             "score": row.get("score"),
             "notes": row.get("notes"),
             "outcome": row.get("outcome"),
@@ -225,6 +234,30 @@ def main(argv: List[str] | None = None) -> int:
         action="store_true",
         help="Force synthetic LONG/SHORT entries when no setups matched (debug only).",
     )
+
+    ap.add_argument(
+        "--use_wait_confirmation",
+        action="store_true",
+        help="Apply next-candle confirmation and execute at next candle open.",
+    )
+    ap.add_argument(
+        "--cluster_score_mode",
+        choices=("LEGACY", "SIGNAL_SCORE"),
+        default=None,
+        help=(
+            "Selection mode passed through to the live pipeline. "
+            "Default is unchanged unless explicitly set."
+        ),
+    )
+    ap.add_argument(
+        "--cluster_rank_signal_score",
+        action="store_true",
+        help=(
+            "Backward-compatible alias for --cluster_score_mode SIGNAL_SCORE. "
+            "No effect unless explicitly used."
+        ),
+    )
+
     ap.add_argument("--window", type=int, default=200, help="Candle window length passed to pipeline")
     ap.add_argument("--bybit_interval", type=int, default=15, help="Candle interval minutes")
     ap.add_argument("--debug", action="store_true", help="Verbose pipeline logs")
@@ -237,6 +270,12 @@ def main(argv: List[str] | None = None) -> int:
     symbols = [s.strip().upper() for s in str(args.symbols).split(",") if s.strip()]
     if not symbols:
         raise SystemExit("--symbols empty")
+
+    cluster_score_mode = args.cluster_score_mode
+    if args.cluster_rank_signal_score:
+        if cluster_score_mode is not None and cluster_score_mode != "SIGNAL_SCORE":
+            ap.error("--cluster_rank_signal_score conflicts with --cluster_score_mode LEGACY")
+        cluster_score_mode = "SIGNAL_SCORE"
 
     dt_from = _parse_dt(args.dt_from)
     dt_to = _parse_dt(args.dt_to)
@@ -253,18 +292,20 @@ def main(argv: List[str] | None = None) -> int:
 
     timelines = []
     for s, df in candles_by_symbol.items():
+        # keep FULL history for warmup/context
         sub = df[(df["timestamp"] >= dt_from) & (df["timestamp"] <= dt_to)].copy()
         timelines.append(sub["timestamp"])
-        candles_by_symbol[s] = sub.reset_index(drop=True)
+        candles_by_symbol[s] = df.reset_index(drop=True)
 
     if not timelines or all(t.empty for t in timelines):
         print("[OFFLINE] no candles in requested range")
         return 0
 
+    # replay timestamps only inside requested range
     all_ts = pd.Index(sorted(set().union(*[set(t.tolist()) for t in timelines if not t.empty])))
 
     trade_idx = 0
-
+    seen_trades = set()
     for ts in all_ts:
         portfolio_state = load_portfolio_exposure(pf_path)
 
@@ -285,12 +326,30 @@ def main(argv: List[str] | None = None) -> int:
                 "bybit_interval": int(args.bybit_interval),
                 "macro_bias": "NEUTRAL",
                 "debug": bool(args.debug),
-
+                "use_wait_confirmation": bool(args.use_wait_confirmation),
+                # selection mode passthrough (default remains unchanged unless explicitly set)
+                **({"cluster_score_mode": cluster_score_mode} if cluster_score_mode is not None else {}),
+                **({"cluster_rank_signal_score": True} if cluster_score_mode == "SIGNAL_SCORE" else {}),
+                # live-like entry params
+                "rr": 2.0,
+                "sl_atr_buffer": 0.15,
+                "require_impulse_before_tdp": False,
+                "impulse_lookback": 10,
+                "impulse_size_atr": 1.0,
+                "tdp_dev_lookback": 8,
+                "tts_retest_lookback": 24,
+                "disable_invalidation": True,
+                # existing debug-force compatibility
                 "debug_force_entries": force_flag,
                 "force_entries": force_flag,
                 "debug_entry_force": force_flag,
                 "DEBUG_FORCE_ENTRIES": force_flag,
             }
+
+            if cluster_score_mode is not None:
+                ctx["cluster_score_mode"] = cluster_score_mode
+                if cluster_score_mode == "SIGNAL_SCORE":
+                    ctx["cluster_rank_signal_score"] = True
 
             df_e = run_pipeline_once(
                 symbol=sym,
@@ -302,6 +361,16 @@ def main(argv: List[str] | None = None) -> int:
 
             if df_e is None or df_e.empty:
                 continue
+
+            entries = df_e.to_dict("records")
+
+            if bool(ctx.get("use_wait_confirmation", False)):
+                entries = apply_wait_confirmation(entries, df_full)
+
+            if not entries:
+                continue
+
+            df_e = pd.DataFrame(entries)
 
             sim = ExecutionSimulator(df_full)
 
@@ -335,6 +404,28 @@ def main(argv: List[str] | None = None) -> int:
 
                 rr = float(r.get("rr", 0.0) or 0.0)
                 score = float(r.get("score", rr) or rr)
+                trade_key = (
+                    str(setup_ts.isoformat()),
+                    str(sym),
+                    str(side),
+                    float(entry),
+                    float(sl),
+                    float(tp),
+                )
+
+                if trade_key in seen_trades:
+                    continue
+
+                seen_trades.add(trade_key)
+
+                risk = (entry - sl) if side == "LONG" else (sl - entry)
+                if risk == 0:
+                    R = 0.0
+                else:
+                    if side == "LONG":
+                        R = (float(getattr(res, "exit_price", entry)) - entry) / risk
+                    else:
+                        R = (entry - float(getattr(res, "exit_price", entry))) / risk
 
                 _append_trade(
                     out_trades,
@@ -347,6 +438,9 @@ def main(argv: List[str] | None = None) -> int:
                         "sl": sl,
                         "tp": tp,
                         "rr": rr,
+                        "R": R,
+                        "phase": r.get("phase", ""),
+                        "regime": r.get("regime", ""),
                         "score": score,
                         "notes": "offline_live_runner",
                         "outcome": getattr(res, "outcome", "") if res is not None else "",

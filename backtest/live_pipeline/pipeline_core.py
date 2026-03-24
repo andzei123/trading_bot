@@ -313,7 +313,19 @@ def run_pipeline_once(
         # -------------------
         macro_bias = str(ctx.get("macro_bias", "NEUTRAL") or "NEUTRAL").upper()
         ph_pre = decide_phase(candles=candles, macro_bias=macro_bias)
-        ctx["phase"] = ph_pre
+
+        # Single source of truth for entry-model-compatible phase string
+        ph_raw = str(getattr(ph_pre, "phase", ph_pre) or "").upper()
+        if ph_raw == "LONG":
+            phase_authority = "PHASE_TREND_UP"
+        elif ph_raw == "SHORT":
+            phase_authority = "PHASE_TREND_DOWN"
+        elif ph_raw == "RANGE":
+            phase_authority = "PHASE_RANGE"
+        else:
+            phase_authority = ph_raw
+
+        ctx["phase"] = phase_authority
 
         # Prefer PhaseDecision.atr_pct (works for offline too); fallback to candles column if present
         atrp = getattr(ph_pre, "atr_pct", None)
@@ -330,7 +342,7 @@ def run_pipeline_once(
         except Exception:
             pass
 
-        print(f"[PHASE_PRE][{symbol}] {ph_pre} | macro_bias={macro_bias} atr%={atrp}")
+        print(f"[PHASE_PRE][{symbol}] {ph_pre} | authority={phase_authority} macro_bias={macro_bias} atr%={atrp}")
         # -------------------
         # ENTRY GENERATION
         # -------------------
@@ -346,6 +358,23 @@ def run_pipeline_once(
         import backtest.journal.filter_trades as ft
 
         ctx_df = ft.build_ctx(candles)
+        try:
+            ctx_df["phase"] = phase_authority
+        except Exception:
+            pass
+
+        try:
+            print(f"[CTX_DIAG][{symbol}] rows={len(ctx_df)} cols={len(ctx_df.columns)}")
+            if "phase" in ctx_df.columns:
+                print(f"[CTX_DIAG][{symbol}] phase_tail={ctx_df['phase'].tail(3).tolist()}")
+            if "sub_label" in ctx_df.columns:
+                print(
+                    f"[CTX_DIAG][{symbol}] sub_label_top={ctx_df['sub_label'].astype(str).value_counts().head(10).to_dict()}")
+            else:
+                print(f"[CTX_DIAG][{symbol}] sub_label missing")
+        except Exception as e:
+            print(f"[CTX_DIAG][{symbol}] failed err={e}")
+
         # inject macro fields used by entry_model
         for k in ("macro_bias", "macro_phase", "macro_strength", "cross_asset_regime", "cross_asset_reason"):
             if k in ctx:
@@ -353,12 +382,20 @@ def run_pipeline_once(
                     ctx_df[k] = ctx[k]
                 except Exception:
                     pass
-        try:
-            ctx_df["phase"] = ph_pre
-        except Exception:
-            pass
 
-        entries = generate_entries_from_ctx(ctx_df)
+
+        entries = generate_entries_from_ctx(
+            ctx_df,
+            rr=float(ctx.get("rr", 2.0) or 2.0),
+            sl_atr_buffer=float(ctx.get("sl_atr_buffer", 0.15) or 0.15),
+            require_impulse_before_tdp=bool(ctx.get("require_impulse_before_tdp", False)),
+            impulse_lookback=int(ctx.get("impulse_lookback", 10) or 10),
+            impulse_size_atr=float(ctx.get("impulse_size_atr", 1.0) or 1.0),
+            tdp_dev_lookback=int(ctx.get("tdp_dev_lookback", 8) or 8),
+            tts_retest_lookback=int(ctx.get("tts_retest_lookback", 24) or 24),
+            debug_entry_filters=bool(ctx.get("debug", False)),
+            symbol=str(symbol or ""),
+        )
         print(f"[ENTRY_DIAG][{symbol}] raw_entries={len(entries)}")
 
 
@@ -401,14 +438,31 @@ def run_pipeline_once(
         # CLUSTER FILTER (works on entries list)
         # -------------------
         try:
+            requested_mode = str(ctx.get("cluster_score_mode", "") or "").strip().upper()
+
+            # backward-compatible alias
+            if requested_mode in ("", "LEGACY") and bool(ctx.get("cluster_rank_signal_score", False)):
+                requested_mode = "SIGNAL_SCORE"
+
+            # default behavior unchanged when no flag is provided
+            if requested_mode == "SIGNAL_SCORE":
+                cluster_score = "SIGNAL_SCORE"
+            else:
+                cluster_score = str(ctx.get("cluster_score", "RR") or "RR")
+
             kept_entries, dropped_entries = apply_signal_cluster_filter(
                 entries,
                 max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
-                score=str(ctx.get("cluster_score", "RR") or "RR"),
+                score=cluster_score,
                 phase=str(ph_pre or "") or None,
             )
             if debug:
-                print(f"[CLUSTER_FILTER][{symbol}] kept={len(kept_entries)} dropped={len(dropped_entries)}")
+                print(
+                    f"[CLUSTER_FILTER][{symbol}] "
+                    f"mode={requested_mode or 'DEFAULT'} "
+                    f"score={cluster_score} "
+                    f"kept={len(kept_entries)} dropped={len(dropped_entries)}"
+                )
             entries = kept_entries
         except Exception:
             pass
@@ -419,9 +473,9 @@ def run_pipeline_once(
 
         # ensure phase column is filled
         if "phase" in df_e.columns:
-            df_e["phase"] = df_e["phase"].fillna(ph_pre)
+            df_e["phase"] = df_e["phase"].fillna(phase_authority)
         else:
-            df_e["phase"] = ph_pre
+            df_e["phase"] = phase_authority
 
         # -------------------
         # ENTRY QUALITY FILTERS (placeholder: keep as-is; live filters already encoded upstream)
@@ -593,12 +647,19 @@ def run_pipeline_once(
 
         # -------------------
         # INVALIDATION (TP/SL hit already)
+        # Live-only stale setup guard. In offline replay, execution simulator
+        # should own the close/outcome path, so this can be disabled via ctx.
         # -------------------
+        disable_invalidation = bool(ctx.get("disable_invalidation", False))
+
         try:
-            df_e, _df_closed = _invalidate_setups_hit_tp_sl(df_e, candles, latest_ts)
-            # Keep logs consistent with live (proof hook)
-            if debug and _df_closed is not None and (not _df_closed.empty):
-                print(f"[INVALIDATION][{symbol}] closed={len(_df_closed)} kept={len(df_e)}")
+            if not disable_invalidation:
+                df_e, _df_closed = _invalidate_setups_hit_tp_sl(df_e, candles, latest_ts)
+                if debug and _df_closed is not None and (not _df_closed.empty):
+                    print(f"[INVALIDATION][{symbol}] closed={len(_df_closed)} kept={len(df_e)}")
+            else:
+                if debug:
+                    print(f"[INVALIDATION][{symbol}] skipped disable_invalidation=True")
         except Exception:
             pass
 

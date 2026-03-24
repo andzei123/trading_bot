@@ -35,6 +35,8 @@ from backtest.risk.policy_engine import (
     evaluate_policy_portfolio,
     evaluate_policy_sizing,
 )
+from backtest.utils.wait_confirmation import apply_wait_confirmation
+from backtest.journal.market_regime import refresh_market_regime_csv
 from backtest.execution.idempotency import enforce_idempotency
 from backtest.metrics.symbol_performance_tracker import update_symbol_performance
 try:
@@ -441,6 +443,50 @@ def _is_bybit_rate_limit_exception(e: Exception) -> bool:
 def now_utc_str() -> str:
     return pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
+def _refresh_market_regime_if_enabled(args) -> None:
+    """
+    Best-effort auto-refresh for market_regime.csv before runner starts.
+    Fail-open: never break the runner if refresh fails.
+    """
+    try:
+        enabled = bool(getattr(args, "refresh_market_regime", False))
+        if not enabled:
+            return
+
+        symbol = str(getattr(args, "market_regime_symbol", "BTCUSDT") or "BTCUSDT")
+        category = str(getattr(args, "market_regime_category", getattr(args, "bybit_category", "linear")) or "linear")
+        interval = str(getattr(args, "market_regime_interval", getattr(args, "bybit_interval", "15")) or "15")
+        candles = int(getattr(args, "market_regime_candles", 20000) or 20000)
+        keep_days = int(getattr(args, "market_regime_keep_days", 180) or 180)
+        htf = str(getattr(args, "market_regime_htf", "4h") or "4h")
+        out_path = str(
+            getattr(
+                args,
+                "market_regime_out",
+                "backtest/journal/exports_trades/market_regime.csv",
+            )
+            or "backtest/journal/exports_trades/market_regime.csv"
+        )
+
+        print(
+            f"[MR AUTO_REFRESH] start symbol={symbol} category={category} "
+            f"interval={interval} candles={candles} keep_days={keep_days} htf={htf}"
+        )
+
+        refresh_market_regime_csv(
+            symbol=symbol,
+            category=category,
+            interval=interval,
+            candles=candles,
+            out_path=out_path,
+            keep_days=keep_days,
+            htf=htf,
+        )
+
+        print(f"[MR AUTO_REFRESH] done out={out_path}")
+
+    except Exception as e:
+        print(f"[MR AUTO_REFRESH][WARN] skipped reason={type(e).__name__}: {e}")
 
 def _read_state(state_path: Path) -> Optional[pd.Timestamp]:
     if not state_path.exists():
@@ -1516,6 +1562,7 @@ def run_once(
     phase_guard: bool = False,
     cluster_rank_signal_score: bool = False,
     cluster_score_mode: str = "LEGACY",
+    use_wait_confirmation: bool = False,
 ) -> int:
     # load candles
     if source == "bybit":
@@ -1801,6 +1848,9 @@ def run_once(
         debug_entry_filters=bool(debug_entry_filters),
     )
 
+    if bool(use_wait_confirmation):
+        entries = apply_wait_confirmation(entries, candles)
+
 
     # ============================================================
     # DEV1 — Signal Cluster Filter (ENTRY → before risk/budget)
@@ -1820,7 +1870,7 @@ def run_once(
             from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
             entries, dropped_cluster = apply_signal_cluster_filter(
                 entries,
-                max_per_group=999,
+                max_per_group=2,
                 score=cluster_score_field,
                 phase=phase_scalar,
                 debug=_diag_enabled(debug_regime, debug_entry_filters),
@@ -3261,7 +3311,11 @@ def main():
         default="backtest/journal/exports_trades/trades_simulated.csv",
         help="CSV with simulated trades (R units) used for regime decision (e.g. trades_simulated.csv).",
     )
-
+    p.add_argument(
+        "--use_wait_confirmation",
+        action="store_true",
+        help="Apply next-candle close confirmation and execute at next candle open.",
+    )
     p.add_argument(
         "--regime_window_months",
         type=int,
@@ -3356,7 +3410,18 @@ def main():
         action="store_true",
         help="Backward-compatible alias for --cluster_score_mode SIGNAL_SCORE.",
     )
-
+    p.add_argument("--refresh_market_regime", action="store_true")
+    p.add_argument("--market_regime_symbol", type=str, default="BTCUSDT")
+    p.add_argument("--market_regime_category", type=str, default="linear")
+    p.add_argument("--market_regime_interval", type=str, default="15")
+    p.add_argument("--market_regime_candles", type=int, default=20000)
+    p.add_argument("--market_regime_keep_days", type=int, default=180)
+    p.add_argument("--market_regime_htf", type=str, default="4h")
+    p.add_argument(
+        "--market_regime_out",
+        type=str,
+        default="backtest/journal/exports_trades/market_regime.csv",
+    )
 
     # testing helpers
     p.add_argument(
@@ -3499,6 +3564,9 @@ def main():
             f"source=state status=DISABLED reason={type(e).__name__}"
         )
 
+
+    _refresh_market_regime_if_enabled(args)
+
     # === LIQUIDATION CONTEXT (Bybit public WS, context-only) ===
     # Contract: exactly-once per --once run. Runner owns the [LIQ] log (no prints inside liquidation.py).
     syms = list(symbols)
@@ -3635,6 +3703,7 @@ def main():
                 phase_guard=bool(args.phase_guard),
                 cluster_rank_signal_score=bool(getattr(args, "cluster_rank_signal_score", False)),
                 cluster_score_mode=str(getattr(args, "cluster_score_mode", "LEGACY")),
+                use_wait_confirmation=bool(args.use_wait_confirmation),
             )
 
         # write aggregated status for dashboard
