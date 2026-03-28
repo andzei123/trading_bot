@@ -250,6 +250,16 @@ def main(argv: List[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--cluster_max_per_group",
+        type=int,
+        choices=(1, 2, 3),
+        default=None,
+        help=(
+            "Max entries per cluster group passed through to the live pipeline. "
+            "Default is unchanged unless explicitly set."
+        ),
+    )
+    ap.add_argument(
         "--cluster_rank_signal_score",
         action="store_true",
         help=(
@@ -261,6 +271,12 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--window", type=int, default=200, help="Candle window length passed to pipeline")
     ap.add_argument("--bybit_interval", type=int, default=15, help="Candle interval minutes")
     ap.add_argument("--debug", action="store_true", help="Verbose pipeline logs")
+    ap.add_argument(
+        "--candidate_pressure_csv",
+        default="backtest/journal/exports_live/candidate_pressure.csv",
+        help="Optional CSV path for candidate pressure diagnostics export",
+    )
+
     args = ap.parse_args(argv)
 
     # Enforce date range presence (but via either alias)
@@ -327,9 +343,11 @@ def main(argv: List[str] | None = None) -> int:
                 "macro_bias": "NEUTRAL",
                 "debug": bool(args.debug),
                 "use_wait_confirmation": bool(args.use_wait_confirmation),
+                "candidate_pressure_csv": args.candidate_pressure_csv,
                 # selection mode passthrough (default remains unchanged unless explicitly set)
                 **({"cluster_score_mode": cluster_score_mode} if cluster_score_mode is not None else {}),
                 **({"cluster_rank_signal_score": True} if cluster_score_mode == "SIGNAL_SCORE" else {}),
+                **({"cluster_max_per_group": int(args.cluster_max_per_group)} if args.cluster_max_per_group is not None else {}),
                 # live-like entry params
                 "rr": 2.0,
                 "sl_atr_buffer": 0.15,
