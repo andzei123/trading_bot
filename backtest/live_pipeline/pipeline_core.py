@@ -16,171 +16,23 @@ Fail-open:
 """
 
 from dataclasses import dataclass
-from pathlib import Path
+
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-def _series_col_or_default(df: pd.DataFrame, col: str, default: float) -> pd.Series:
-    """Return numeric Series for df[col] or a constant Series(default) aligned to df.index."""
-    if df is None or df.empty:
-        return pd.Series(dtype=float)
-    if col in df.columns:
-        s = pd.to_numeric(df[col], errors="coerce")
-        return s.fillna(float(default))
-    return pd.Series([float(default)] * len(df), index=df.index, dtype=float)
-
-
-def _write_candidate_pressure_row(*, entries: list[Any], symbol: str, ts: Any, out_csv: str | None) -> None:
-    """Validation-only Stage 2.6 artifact written before cluster filter.
-
-    Read-only / fail-open: counts raw candidates and cluster-group pressure
-    without changing strategy, scoring, filters, wait-entry, risk or execution.
-    """
-    if not out_csv:
-        return
-    try:
-        from backtest.filters.signal_cluster_filter import _extract_symbol, default_group_for_symbol
-
-        counts: dict[str, int] = {}
-        for e in list(entries or []):
-            base = _extract_symbol(e)
-            grp = default_group_for_symbol(base)
-            counts[grp] = int(counts.get(grp, 0)) + 1
-
-        row = {
-            "timestamp": pd.to_datetime(ts, utc=True, errors="coerce"),
-            "symbol": str(symbol),
-            "raw_candidate_count": int(len(entries or [])),
-            "cluster_group_count": int(len(counts)),
-            "groups_gt1": int(sum(1 for v in counts.values() if int(v) > 1)),
-            "groups_gt2": int(sum(1 for v in counts.values() if int(v) > 2)),
-            "groups_gt3": int(sum(1 for v in counts.values() if int(v) > 3)),
-        }
-
-        p = Path(str(out_csv))
-        p.parent.mkdir(parents=True, exist_ok=True)
-        write_header = (not p.exists()) or p.stat().st_size == 0
-        pd.DataFrame([row]).to_csv(p, mode="a", header=write_header, index=False)
-    except Exception:
-        return
-
+from backtest.live.pipeline_helpers.diagnostics import _write_candidate_pressure_row
+from backtest.live.pipeline_helpers.entry_normalization import _entries_to_df
+from backtest.live.pipeline_helpers.normalization import (
+    _safe_to_datetime_utc,
+    _series_col_or_default,
+)
+from backtest.live.pipeline_helpers.schema import LIVE_ENTRIES_COLUMNS, _empty_entries_df
 
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.live.phase_router import decide_phase
 from backtest.risk.portfolio_correlation_caps import _bucket as _corr_bucket  # type: ignore
-
-
-# ------------------------------
-# Stable schema (mirrors live_signal_runner)
-# ------------------------------
-
-LIVE_ENTRIES_COLUMNS = [
-    "timestamp",
-    "signal_ts",
-    "model",
-    "side",
-    "entry",
-    "sl",
-    "tp",
-    "rr",
-    "ctx_sub_label",
-    "regime",
-    "trend_dir",
-    "trend_strength",
-    "atr_pct",
-    "phase",
-    "symbol",
-    "liq_bias",
-    "liq_risk_multiplier",
-    "risk_multiplier",
-    "block_reason",
-    "context_allow",
-    "macro_allow",
-    "macro_reason",
-    "macro_bias",
-    "macro_bias_mismatch",
-    "news_allow",
-    "news_reason",
-    "liq_allow",
-    "liq_reason",
-    "freeze_new_signals",
-    "setup_age_hours",
-    "setup_age_candles",
-]
-
-
-def _empty_entries_df() -> pd.DataFrame:
-    return pd.DataFrame({c: pd.Series(dtype="object") for c in LIVE_ENTRIES_COLUMNS})
-
-
-def _safe_to_datetime_utc(s) -> pd.Series:
-    return pd.to_datetime(s, utc=True, errors="coerce")
-
-
-def _entries_to_df(entries: list[Any], *, symbol: str) -> pd.DataFrame:
-    """Normalize entry objects/dicts into a dataframe."""
-
-    if not entries:
-        df = _empty_entries_df()
-        df["symbol"] = df["symbol"].astype("object")
-        return df
-
-    rows = []
-    for e in entries:
-        if isinstance(e, dict):
-            get = e.get
-        else:
-            get = lambda k, default=None: getattr(e, k, default)
-        ts = get("timestamp", None) or get("ts", None) or get("time", None)
-        rows.append(
-            {
-                "timestamp": ts,
-                "signal_ts": get("signal_ts", None),
-                "model": get("model", ""),
-                "side": get("side", ""),
-                "entry": get("entry", None),
-                "sl": get("sl", None),
-                "tp": get("tp", None),
-                "rr": get("rr", None),
-                "ctx_sub_label": get("ctx_sub_label", get("sub_label", None)),
-                "regime": get("regime", None),
-                "trend_dir": get("trend_dir", None),
-                "trend_strength": get("trend_strength", None),
-                "atr_pct": get("atr_pct", None),
-                "phase": get("phase", None),
-                "symbol": symbol,
-                "liq_bias": get("liq_bias", None),
-                "liq_risk_multiplier": get("liq_risk_multiplier", None),
-                "risk_multiplier": get("risk_multiplier", None),
-                "block_reason": get("block_reason", None),
-                "context_allow": get("context_allow", None),
-                "macro_allow": get("macro_allow", None),
-                "macro_reason": get("macro_reason", None),
-                "macro_bias": get("macro_bias", None),
-                "macro_bias_mismatch": get("macro_bias_mismatch", None),
-                "news_allow": get("news_allow", None),
-                "news_reason": get("news_reason", None),
-                "liq_allow": get("liq_allow", None),
-                "liq_reason": get("liq_reason", None),
-                "freeze_new_signals": get("freeze_new_signals", None),
-                "setup_age_hours": get("setup_age_hours", None),
-                "setup_age_candles": get("setup_age_candles", None),
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    # Guarantee columns
-    for c in LIVE_ENTRIES_COLUMNS:
-        if c not in df.columns:
-            df[c] = np.nan
-    df = df[LIVE_ENTRIES_COLUMNS]
-    # timestamps
-    df["timestamp"] = _safe_to_datetime_utc(df["timestamp"])
-    if "signal_ts" in df.columns:
-        df["signal_ts"] = _safe_to_datetime_utc(df["signal_ts"])
-    return df
 
 
 def _invalidate_setups_hit_tp_sl(
