@@ -22,7 +22,7 @@ Outputs (required):
 import argparse
 import csv
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import pandas as pd
 
@@ -39,6 +39,39 @@ def _parse_dt(s: str) -> pd.Timestamp:
     if pd.isna(ts):
         raise ValueError(f"Bad datetime: {s}")
     return ts
+
+
+def _build_setup_id(symbol: str, timestamp, model: str, side: str) -> str:
+    ts = pd.to_datetime(timestamp, utc=True, errors="coerce")
+    return f"{str(symbol).upper()}|{ts}|{str(model)}|{str(side).upper()}"
+
+
+def _load_fired_setup_ids(path: Path) -> Set[str]:
+    if not path.exists():
+        return set()
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return set()
+    if df.empty or "setup_id" not in df.columns:
+        return set()
+    return {str(x) for x in df["setup_id"].dropna().astype(str)}
+
+
+def _append_fired_setup(path: Path, row: Dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = {
+        "setup_id": row.get("setup_id"),
+        "symbol": row.get("symbol"),
+        "timestamp": row.get("timestamp"),
+        "model": row.get("model"),
+        "side": row.get("side"),
+    }
+    df = pd.DataFrame([out])
+    if not path.exists() or path.stat().st_size == 0:
+        df.to_csv(path, index=False)
+    else:
+        df.to_csv(path, mode="a", header=False, index=False)
 
 
 def _load_symbol_candles(candles_dir: Path, symbol: str) -> pd.DataFrame:
@@ -127,6 +160,7 @@ def _ensure_trades_header(path: Path) -> None:
                 "bars_held",
                 "exit_timestamp",
                 "symbol",
+                "setup_id",
             ]
         )
 
@@ -157,6 +191,7 @@ def _append_trade(path: Path, row: Dict) -> None:
         "bars_held",
         "exit_timestamp",
         "symbol",
+        "setup_id",
     ]
 
     file_exists = path.exists()
@@ -188,6 +223,7 @@ def _append_trade(path: Path, row: Dict) -> None:
             "bars_held": row.get("bars_held"),
             "exit_timestamp": row.get("exit_timestamp") or "",
             "symbol": row.get("symbol"),
+            "setup_id": row.get("setup_id"),
         }
 
         writer.writerow(clean_row)
@@ -228,6 +264,11 @@ def main(argv: List[str] | None = None) -> int:
         "--out_trades",
         default="backtest/journal/trades.csv",
         help="Output trades.csv (will be appended/created)",
+    )
+    ap.add_argument(
+        "--fired_setups_csv",
+        default="backtest/journal/fired_setups.csv",
+        help="Persistent setup id store for once-only emission",
     )
     ap.add_argument(
         "--debug_force_entries",
@@ -301,6 +342,8 @@ def main(argv: List[str] | None = None) -> int:
     candles_dir = Path(args.candles_dir)
     out_trades = Path(args.out_trades)
     pf_path = Path(args.portfolio_state)
+    fired_setups_path = Path(args.fired_setups_csv)
+    fired_setup_ids = _load_fired_setup_ids(fired_setups_path)
 
     _ensure_trades_header(out_trades)
 
@@ -322,6 +365,7 @@ def main(argv: List[str] | None = None) -> int:
 
     trade_idx = 0
     seen_trades = set()
+    open_position_until: Dict[str, int] = {}
     for ts in all_ts:
         portfolio_state = load_portfolio_exposure(pf_path)
 
@@ -329,6 +373,17 @@ def main(argv: List[str] | None = None) -> int:
             df_full = candles_by_symbol[sym]
             if df_full.empty:
                 continue
+
+            active_until = open_position_until.get(sym)
+            if active_until is not None:
+                try:
+                    ts_idx = int(df_full[df_full["timestamp"] <= ts].index.max())
+                except Exception:
+                    ts_idx = None
+                if ts_idx is not None and ts_idx <= int(active_until):
+                    continue
+                if ts_idx is not None and ts_idx > int(active_until):
+                    open_position_until.pop(sym, None)
 
             df_up_to = df_full[df_full["timestamp"] <= ts]
             if df_up_to.empty:
@@ -402,6 +457,10 @@ def main(argv: List[str] | None = None) -> int:
                 if pd.isna(setup_ts):
                     continue
 
+                setup_id = _build_setup_id(sym, setup_ts, str(r.get("model", "")), side)
+                if setup_id in fired_setup_ids:
+                    continue
+
                 try:
                     entry_idx = int(df_full.index[df_full["timestamp"] == setup_ts][0])
                 except Exception:
@@ -435,6 +494,19 @@ def main(argv: List[str] | None = None) -> int:
                     continue
 
                 seen_trades.add(trade_key)
+                fired_setup_ids.add(setup_id)
+                _append_fired_setup(
+                    fired_setups_path,
+                    {
+                        "setup_id": setup_id,
+                        "symbol": sym,
+                        "timestamp": setup_ts.isoformat(),
+                        "model": str(r.get("model", "")),
+                        "side": side,
+                    },
+                )
+                if res is not None and getattr(res, "exit_idx", None) is not None:
+                    open_position_until[sym] = int(getattr(res, "exit_idx"))
 
                 risk = (entry - sl) if side == "LONG" else (sl - entry)
                 if risk == 0:
@@ -467,6 +539,7 @@ def main(argv: List[str] | None = None) -> int:
                         "bars_held": getattr(res, "bars_held", "") if res is not None else "",
                         "exit_timestamp": exit_ts_str,
                         "symbol": sym,
+                        "setup_id": setup_id,
                     },
                 )
                 trade_idx += 1
