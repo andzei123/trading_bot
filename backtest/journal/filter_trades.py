@@ -418,6 +418,95 @@ def label_tts_tdp(c: pd.DataFrame, RANGE_LEN: int | None = None) -> pd.DataFrame
     c.loc[tts_up, ["label", "sub_label", "tts_dir", "tdp_dir"]] = ["TTS", "TTS_UP", "LONG", None]
     c.loc[tts_dn, ["label", "sub_label", "tts_dir", "tdp_dir"]] = ["TTS", "TTS_DN", "SHORT", None]
 
+    # =========================
+    # TDP LABEL AUDIT (logging only)
+    # =========================
+    try:
+        import os
+
+        _tdp_audit = os.getenv("TDP_AUDIT", "").strip().lower() in ("1", "true", "yes", "y")
+        if _tdp_audit:
+            tail_n = 30
+            tail = c.tail(tail_n).copy()
+
+            print("\n[TDP_AUDIT] =======================================")
+            print(f"[TDP_AUDIT] rows_tail={len(tail)}")
+
+            if "sub_label" in tail.columns:
+                print("[TDP_AUDIT] sub_label counts:")
+                print(tail["sub_label"].value_counts(dropna=False).to_dict())
+            else:
+                print("[TDP_AUDIT] sub_label column missing")
+
+            # Logging-only gate visibility
+            tdp_gate_cols = []
+
+            if "dev_count" in tail.columns:
+                tail["tdp_dev_ok"] = pd.to_numeric(tail["dev_count"], errors="coerce") >= DEV_MIN_TDP
+                tdp_gate_cols.append("tdp_dev_ok")
+
+            if "range_width_atr" in tail.columns:
+                tail["tdp_range_ok"] = pd.to_numeric(tail["range_width_atr"], errors="coerce") <= TDP_RANGE_ATR_MAX
+                tdp_gate_cols.append("tdp_range_ok")
+
+            if "impulse_atr" in tail.columns:
+                tail["tdp_impulse_ok"] = pd.to_numeric(tail["impulse_atr"], errors="coerce") >= TDP_IMPULSE_MIN
+                tdp_gate_cols.append("tdp_impulse_ok")
+
+            if "dev_up_count" in tail.columns:
+                tail["tdp_top_dev_ok"] = pd.to_numeric(tail["dev_up_count"], errors="coerce") >= 1
+                tdp_gate_cols.append("tdp_top_dev_ok")
+
+            if "dev_dn_count" in tail.columns:
+                tail["tdp_bot_dev_ok"] = pd.to_numeric(tail["dev_dn_count"], errors="coerce") >= 1
+                tdp_gate_cols.append("tdp_bot_dev_ok")
+
+            if "is_top_extreme" in tail.columns:
+                tail["tdp_top_extreme_ok"] = tail["is_top_extreme"].fillna(False).astype(bool)
+                tdp_gate_cols.append("tdp_top_extreme_ok")
+
+            if "is_bot_extreme" in tail.columns:
+                tail["tdp_bot_extreme_ok"] = tail["is_bot_extreme"].fillna(False).astype(bool)
+                tdp_gate_cols.append("tdp_bot_extreme_ok")
+
+            if REQUIRE_TREND_FOR_TDP and "htf_trend" in tail.columns:
+                tail["tdp_top_trend_ok"] = tail["htf_trend"].astype(str).eq("DOWN")
+                tail["tdp_bot_trend_ok"] = tail["htf_trend"].astype(str).eq("UP")
+                tdp_gate_cols.extend(["tdp_top_trend_ok", "tdp_bot_trend_ok"])
+
+            print("[TDP_AUDIT] gate pass counts:")
+            summary = {}
+            for col in tdp_gate_cols:
+                try:
+                    summary[col] = int(pd.Series(tail[col]).fillna(False).astype(bool).sum())
+                except Exception:
+                    summary[col] = "ERR"
+            print(summary)
+
+            show_cols = [
+                "timestamp",
+                "sub_label",
+                "dev_count",
+                "dev_up_count",
+                "dev_dn_count",
+                "range_width_atr",
+                "impulse_atr",
+                "is_top_extreme",
+                "is_bot_extreme",
+                "htf_trend",
+            ] + tdp_gate_cols
+
+            show_cols = [col for col in show_cols if col in tail.columns]
+
+            print("[TDP_AUDIT] tail snapshot:")
+            with pd.option_context("display.max_columns", None, "display.width", 240):
+                print(tail[show_cols].tail(10).to_string(index=False))
+
+            print("[TDP_AUDIT] =======================================\n")
+
+    except Exception as e:
+        print(f"[TDP_AUDIT_ERROR] {type(e).__name__}: {e}")
+
     return c
 
 
