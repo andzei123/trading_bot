@@ -433,62 +433,6 @@ def _phase_upper(ctx: pd.DataFrame) -> pd.Series:
     return ctx["phase"].astype(str).str.upper().fillna("PHASE_UNKNOWN")
 
 
-def _find_tdp_short_execution_idx(
-    c: pd.DataFrame,
-    i: int,
-    lookahead: int = 5,
-) -> int:
-    """
-    Find first execution-ready continuation candle for TDP SHORT
-    after label/setup candle i.
-
-    Priority:
-      1) bearish continuation: close[j] < close[j-1] AND high[j] <= high[j-1]
-      2) weaker continuation: close[j] < close[j-1]
-      3) fallback: first candle with close[j] < close[i]
-      4) final fallback: i+1 (or last available row)
-    """
-    n = len(c)
-    if n == 0:
-        return i
-
-    start = min(i + 1, n - 1)
-    end = min(i + int(lookahead), n - 1)
-
-    if start > end:
-        return min(i + 1, n - 1)
-
-    # Option B (stronger): lower/equal high + lower close
-    for j in range(start, end + 1):
-        try:
-            if (
-                float(c.loc[j, "close"]) < float(c.loc[j - 1, "close"])
-                and float(c.loc[j, "high"]) <= float(c.loc[j - 1, "high"])
-            ):
-                return j
-        except Exception:
-            continue
-
-    # Option B (minimal bearish continuation): lower close vs previous candle
-    for j in range(start, end + 1):
-        try:
-            if float(c.loc[j, "close"]) < float(c.loc[j - 1, "close"]):
-                return j
-        except Exception:
-            continue
-
-    # Option A fallback: lower close vs label candle
-    label_close = float(c.loc[i, "close"])
-    for j in range(start, end + 1):
-        try:
-            if float(c.loc[j, "close"]) < label_close:
-                return j
-        except Exception:
-            continue
-
-    # Final safe fallback
-    return min(i + 1, n - 1)
-
 # ============================================================
 # Trend generator (B1)
 # ============================================================
@@ -570,34 +514,19 @@ def generate_trend_entries(
         if b > 0 and a == 0:
             _dbg("TDP_SHORT_REMOVED_BY_IMPULSE", f"base={b} after=0 (need impulse_recent & dir==UP)")
     for i in np.where(reentry_short.values)[0]:
-        j = _find_tdp_short_execution_idx(c, i, lookahead=5)
-
-        entry_px = float(c.loc[j, "close"])
-        atr = float(c.loc[j, "atr"])
+        entry_px = float(c.loc[i, "close"])
+        atr = float(c.loc[i, "atr"])
         sl = float(recent_high.loc[i] + sl_atr_buffer * atr)
         risk0 = float(sl - entry_px)
-
         if (not np.isfinite(risk0)) or (risk0 <= 0):
             if debug_entry_filters:
                 _entry_diag_bump(ctx, "SL_INVALID", 1)
-                tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
-                print(f"{tag} TDP_SHORT_EXECUTION_INVALID i={i} j={j}")
             continue
-
         risk = max(1e-9, risk0)
         tp = entry_px - rr * risk
 
-        if debug_entry_filters:
-            tag = f"[ENTRY_FILTER][{symbol}]" if symbol else "[ENTRY_FILTER]"
-            print(
-                f"{tag} TDP_SHORT_EXECUTION_SHIFT "
-                f"label_idx={i} exec_idx={j} "
-                f"label_ts={pd.Timestamp(c.loc[i, 'timestamp'])} "
-                f"exec_ts={pd.Timestamp(c.loc[j, 'timestamp'])}"
-            )
-
         entries.append(Entry(
-            timestamp=pd.Timestamp(c.loc[j, "timestamp"]),
+            timestamp=pd.Timestamp(c.loc[i, "timestamp"]),
             model="TDP_REENTRY",
             side="SHORT",
             entry=entry_px,
@@ -606,11 +535,11 @@ def generate_trend_entries(
             symbol=str(symbol).strip(),
             meta="TDP_TOP trend continuation",
             ctx_sub_label="TDP_TOP",
-            regime=str(c.loc[j, "regime"]),
-            trend_dir=str(c.loc[j, "trend_dir"]),
-            trend_strength=float(c.loc[j, "trend_strength"]),
-            atr_pct=float(c.loc[j, "atr_pct"]),
-            phase=str(c.loc[j, "phase"]),
+            regime=str(c.loc[i, "regime"]),
+            trend_dir=str(c.loc[i, "trend_dir"]),
+            trend_strength=float(c.loc[i, "trend_strength"]),
+            atr_pct=float(c.loc[i, "atr_pct"]),
+            phase=str(c.loc[i, "phase"]),
         ))
 
     # =================================================
