@@ -548,12 +548,25 @@ def run_pipeline_once(
 
         try:
             if not disable_invalidation:
+                before_invalidation = len(df_e)
+
                 df_e, _df_closed = _invalidate_setups_hit_tp_sl(df_e, candles, latest_ts)
+
+                after_invalidation = len(df_e)
+
+                if after_invalidation < before_invalidation:
+                    print(
+                        f"[DROP][{symbol}] stage=INVALIDATION "
+                        f"before={before_invalidation} after={after_invalidation}"
+                    )
+
                 if debug and _df_closed is not None and (not _df_closed.empty):
                     print(f"[INVALIDATION][{symbol}] closed={len(_df_closed)} kept={len(df_e)}")
+
             else:
                 if debug:
                     print(f"[INVALIDATION][{symbol}] skipped disable_invalidation=True")
+
         except Exception:
             pass
 

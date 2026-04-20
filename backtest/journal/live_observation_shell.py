@@ -50,6 +50,7 @@ FLOW_LOG_COLUMNS = [
     "side",
     "setup_created_ts",
     "visible_ts",
+    "entry_anchor_ts",
     "first_seen_ts",
     "age_candles_at_first_seen",
     "age_minutes_at_first_seen",
@@ -389,6 +390,7 @@ def _make_flow_row(*, cycle_ts: pd.Timestamp, symbol: str, latest_ts: Optional[p
 
         # execution-visible semantics
         "visible_ts": pd.NaT,
+        "entry_anchor_ts": pd.NaT,
         "first_seen_ts": pd.NaT,
         "age_candles_at_first_seen": 0,
         "age_minutes_at_first_seen": 0.0,
@@ -425,6 +427,8 @@ def _time_alignment_audit(
     candles_df: pd.DataFrame,
     latest_ts: pd.Timestamp,
     raw_df: Optional[pd.DataFrame] = None,
+    visible_ts: Optional[pd.Timestamp] = None,
+    pipeline_visible_ts: Optional[pd.Timestamp] = None,
 ) -> None:
     try:
         now_utc = pd.Timestamp.now(tz="UTC")
@@ -443,13 +447,24 @@ def _time_alignment_audit(
         print(c[["timestamp", "open", "high", "low", "close"]].tail(5).to_string(index=False))
 
         last_row_ts = c["timestamp"].iloc[-1] if len(c) else pd.NaT
-        last_le_latest = c.loc[c["timestamp"] <= latest_ts, "timestamp"].max() if len(c) else pd.NaT
+
+        visible_ts = pd.to_datetime(visible_ts, utc=True, errors="coerce")
+        pipeline_visible_ts = pd.to_datetime(pipeline_visible_ts, utc=True, errors="coerce")
+
+        entry_anchor_ts = latest_ts
+        if pd.notna(visible_ts):
+            entry_anchor_ts = visible_ts
+        elif pd.notna(pipeline_visible_ts):
+            entry_anchor_ts = pipeline_visible_ts
+
+        last_le_latest = c.loc[c["timestamp"] <= entry_anchor_ts, "timestamp"].max() if len(c) else pd.NaT
 
         print(f"[TIME_AUDIT][{symbol}] last_row_ts={last_row_ts}")
-        print(f"[TIME_AUDIT][{symbol}] last_ts_le_latest={last_le_latest}")
-        print(f"[TIME_AUDIT][{symbol}] last_row_eq_last_le_latest={bool(last_row_ts == last_le_latest)}")
+        print(f"[TIME_AUDIT][{symbol}] entry_anchor_ts={entry_anchor_ts}")
+        print(f"[TIME_AUDIT][{symbol}] last_ts_le_anchor={last_le_latest}")
+        print(f"[TIME_AUDIT][{symbol}] last_row_eq_last_le_anchor={bool(last_row_ts == last_le_latest)}")
 
-        sliced = c.loc[c["timestamp"] <= latest_ts].copy()
+        sliced = c.loc[c["timestamp"] <= entry_anchor_ts].copy()
         removed = int(len(c) - len(sliced))
 
         print(f"[TIME_AUDIT][{symbol}] rows_before_slice={len(c)}")
@@ -588,7 +603,10 @@ def run_symbol_once(
         _append_flow_row(flow_log_csv, flow_row)
         return 0
 
-    latest_ts = pd.to_datetime(candles_df["timestamp"].iloc[-1], utc=True, errors="coerce")
+    # paskutinė žvakė laikoma formuojama, todėl jos nenaudojam kaip latest closed bar
+    latest_ts = pd.to_datetime(candles_df["timestamp"].iloc[-2], utc=True, errors="coerce")
+    candles_df = candles_df.iloc[:-1].copy().reset_index(drop=True)
+
     flow_row = _make_flow_row(cycle_ts=cycle_ts, symbol=symbol, latest_ts=latest_ts)
     if debug:
         _time_alignment_audit(
@@ -596,6 +614,8 @@ def run_symbol_once(
             candles_df=candles_df,
             latest_ts=latest_ts,
             raw_df=None,
+            visible_ts=None,
+            pipeline_visible_ts=None,
         )
     state_path = state_dir / f"{symbol}_{interval}.txt"
     last_seen = _read_state(state_path)
@@ -669,7 +689,9 @@ def run_symbol_once(
         portfolio_state=portfolio_state,
         debug=bool(debug),
     )
-
+    visible_ts = pd.NaT
+    pipeline_visible_ts = pd.NaT
+    entry_anchor_ts = pd.NaT
     # ==============================
     # DISCOVERY GATE (NEW SIGNALS ONLY)
     # ==============================
@@ -716,11 +738,31 @@ def run_symbol_once(
     if df_e is not None and not df_e.empty:
         df_e = df_e.copy()
         df_e["timestamp"] = pd.to_datetime(df_e["timestamp"], utc=True, errors="coerce")
-        df_e["visible_ts"] = pd.Timestamp(latest_ts)
+
+        if "visible_ts" not in df_e.columns:
+            df_e["visible_ts"] = pd.NaT
+        if "pipeline_visible_ts" not in df_e.columns:
+            df_e["pipeline_visible_ts"] = pd.NaT
+
+        df_e["visible_ts"] = pd.to_datetime(df_e["visible_ts"], utc=True, errors="coerce")
+        df_e["pipeline_visible_ts"] = pd.to_datetime(df_e["pipeline_visible_ts"], utc=True, errors="coerce")
+
+        m = df_e["visible_ts"].isna()
+        df_e.loc[m, "visible_ts"] = df_e.loc[m, "pipeline_visible_ts"]
+
+        m = df_e["visible_ts"].isna()
+        df_e.loc[m, "visible_ts"] = df_e.loc[m, "timestamp"]
 
         first_row = df_e.iloc[0]
         setup_created_ts = pd.to_datetime(first_row.get("timestamp"), utc=True, errors="coerce")
-        visible_ts = pd.to_datetime(first_row.get("visible_ts", latest_ts), utc=True, errors="coerce")
+        visible_ts = pd.to_datetime(first_row.get("visible_ts"), utc=True, errors="coerce")
+        pipeline_visible_ts = pd.to_datetime(first_row.get("pipeline_visible_ts"), utc=True, errors="coerce")
+
+        entry_anchor_ts = visible_ts
+        if pd.isna(entry_anchor_ts):
+            entry_anchor_ts = pipeline_visible_ts
+        if pd.isna(entry_anchor_ts):
+            entry_anchor_ts = setup_created_ts
 
         flow_row["setup_id"] = _build_setup_id(
             symbol,
@@ -732,6 +774,7 @@ def run_symbol_once(
         flow_row["side"] = str(first_row.get("side", "")).upper()
         flow_row["setup_created_ts"] = setup_created_ts
         flow_row["visible_ts"] = visible_ts
+        flow_row["entry_anchor_ts"] = entry_anchor_ts
         flow_row["first_seen_ts"] = visible_ts
         flow_row["age_candles_at_first_seen"] = 0
         flow_row["age_minutes_at_first_seen"] = 0.0
@@ -746,6 +789,8 @@ def run_symbol_once(
             candles_df=window,
             latest_ts=latest_ts,
             raw_df=df_e,
+            visible_ts=visible_ts,
+            pipeline_visible_ts=pipeline_visible_ts,
         )
     if df_e is None or df_e.empty:
         _write_state(state_path, latest_ts)
@@ -760,15 +805,16 @@ def run_symbol_once(
     entries = df_e.to_dict("records")
 
     if bool(use_wait_confirmation):
+        before_wait = len(entries)
         entries = apply_wait_confirmation(entries, window)
+        after_wait = len(entries)
 
-    entries = df_e.to_dict("records")
-
-    if bool(use_wait_confirmation):
-        entries = apply_wait_confirmation(entries, window)
+        if after_wait < before_wait:
+            print(f"[DROP][{symbol}] stage=WAIT_CONFIRM before={before_wait} after={after_wait}")
 
     if not entries:
         entries = df_e.to_dict("records")
+
 
     wait_df = pd.DataFrame(entries)
     flow_row["after_wait_count"] = int(len(wait_df))
@@ -781,6 +827,7 @@ def run_symbol_once(
 
     if out_df.empty:
         _write_state(state_path, latest_ts)
+        print(f"[POST_DROP][{symbol}] stage=FRESHNESS latest_ts={latest_ts}")
         print(f"[OBSERVE][{symbol}] post_pipeline rows=0 after freshness latest_ts={latest_ts}")
         flow_row["notes"] = "died_in_freshness"
         flow_row["death_stage"] = "freshness"
@@ -798,6 +845,7 @@ def run_symbol_once(
 
     if out_df.empty:
         _write_state(state_path, latest_ts)
+        print(f"[POST_DROP][{symbol}] stage=IDEMPOTENCY latest_ts={latest_ts}")
         print(f"[OBSERVE][{symbol}] post_pipeline rows=0 after idempotency latest_ts={latest_ts}")
         flow_row["after_stale_count"] = flow_row["after_wait_count"]
         flow_row["model_summary_after_stale"] = flow_row["model_summary_after_wait"]
@@ -809,12 +857,18 @@ def run_symbol_once(
 
     out_df["observed_ts"] = latest_ts
 
+    before_stale = len(out_df)
     out_df = filter_live_emit_candidates(out_df, candles_df, latest_ts)
+    after_stale = len(out_df)
     flow_row["after_stale_count"] = int(len(out_df))
+
+    if after_stale < before_stale:
+        print(f"[DROP][{symbol}] stage=STALE before={before_stale} after={after_stale}")
     flow_row["model_summary_after_stale"] = _series_summary(out_df, "model")
 
     if out_df.empty:
         _write_state(state_path, latest_ts)
+        print(f"[POST_DROP][{symbol}] stage=STALE latest_ts={latest_ts}")
         print(f"[OBSERVE][{symbol}] post_pipeline rows=0 after stale-hit filter latest_ts={latest_ts}")
         flow_row["notes"] = "died_in_stale"
         flow_row["death_stage"] = "stale"

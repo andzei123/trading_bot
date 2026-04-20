@@ -4,6 +4,9 @@ import pandas as pd
 LIVE_ENTRIES_COLUMNS = [
     "timestamp",
     "signal_ts",
+    "visible_ts",
+    "pipeline_visible_ts",
+    "confirm_ts",
     "model",
     "side",
     "entry",

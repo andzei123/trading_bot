@@ -482,16 +482,24 @@ def generate_trend_entries(
     if debug_entry_filters:
         try:
             base_lbl = ((c["sub_label"] == "TDP_TOP") & dev_up_recent).fillna(False)
-            mismatch = (base_lbl & (c["phase"] != "PHASE_TREND_DOWN")).fillna(False)
+            mismatch = (base_lbl & (c["htf_trend"] != "DOWN")).fillna(False)
             n_mismatch = int(mismatch.sum())
             if n_mismatch > 0:
                 _entry_diag_bump(ctx, "TREND_MISMATCH", n_mismatch)
+                for j in np.where(mismatch.values)[0]:
+                    print(
+                        f"[ENTRY_DROP][{symbol}] "
+                        f"model=TDP_REENTRY side=SHORT "
+                        f"phase={str(c.loc[j, 'phase'])} "
+                        f"sub_label={str(c.loc[j, 'sub_label'])} "
+                        f"reason=TREND_MISMATCH"
+                    )
         except Exception:
             pass
     reentry_short = (
             (c["sub_label"] == "TDP_TOP")
             & dev_up_recent
-            & (c["phase"] == "PHASE_TREND_DOWN")
+            & (c["htf_trend"] == "DOWN")
     )
 
     base_short = reentry_short.copy()
@@ -558,10 +566,18 @@ def generate_trend_entries(
     if debug_entry_filters:
         try:
             base_lbl = ((c["sub_label"] == "TDP_BOT") & dev_dn_recent).fillna(False)
-            mismatch = (base_lbl & (c["phase"] != "PHASE_TREND_UP")).fillna(False)
+            mismatch = (base_lbl & (c["htf_trend"] != "UP")).fillna(False)
             n_mismatch = int(mismatch.sum())
             if n_mismatch > 0:
                 _entry_diag_bump(ctx, "TREND_MISMATCH", n_mismatch)
+                for j in np.where(mismatch.values)[0]:
+                    print(
+                        f"[ENTRY_DROP][{symbol}] "
+                        f"model=TDP_REENTRY side=LONG "
+                        f"phase={str(c.loc[j, 'phase'])} "
+                        f"sub_label={str(c.loc[j, 'sub_label'])} "
+                        f"reason=TREND_MISMATCH"
+                    )
         except Exception:
             pass
     # --- base (no impulse required) ---
@@ -570,7 +586,7 @@ def generate_trend_entries(
             & dev_dn_recent
             & sweep
             & future_reclaim
-            & (c["phase"] == "PHASE_TREND_UP")
+            & (c["htf_trend"] == "UP")
     )
 
     base_long = reentry_long.copy()
@@ -849,6 +865,13 @@ def _generate_range_top_short_v2(
         if k_entry is None:
             if debug_entry_filters:
                 _entry_diag_bump(_diag_df, "RETEST_FAIL", 1)
+                print(
+                    f"[ENTRY_DROP][{symbol}] "
+                    f"model=RANGE_TOP_SHORT_V2 side=SHORT "
+                    f"phase={str(c.loc[i, 'phase']) if 'phase' in c.columns else 'PHASE_RANGE'} "
+                    f"sub_label=RANGE_TOP_SHORT "
+                    f"reason=RETEST_FAIL"
+                )
                 print(f"{tag} RANGE_TOP_NO_RETEST idx={i} reclaim_idx={j_reclaim} lookahead={retest_lookahead}")
             i += 1
             continue

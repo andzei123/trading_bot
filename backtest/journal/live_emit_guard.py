@@ -11,6 +11,18 @@ MODEL_MAX_AGE_CANDLES = {
 
 ASSUMED_CANDLE_INTERVAL = pd.Timedelta(minutes=15)
 
+def _resolve_entry_anchor_ts(row: pd.Series) -> pd.Timestamp:
+    visible_ts = pd.to_datetime(row.get("visible_ts"), utc=True, errors="coerce")
+    pipeline_visible_ts = pd.to_datetime(row.get("pipeline_visible_ts"), utc=True, errors="coerce")
+    timestamp_ts = pd.to_datetime(row.get("timestamp"), utc=True, errors="coerce")
+
+    anchor_ts = visible_ts
+    if pd.isna(anchor_ts):
+        anchor_ts = pipeline_visible_ts
+    if pd.isna(anchor_ts):
+        anchor_ts = timestamp_ts
+
+    return anchor_ts
 
 def filter_live_emit_candidates(
     df: pd.DataFrame,
@@ -43,7 +55,7 @@ def filter_live_emit_candidates(
     for _, row in df.iterrows():
         side = str(row.get("side", "")).upper().strip()
 
-        setup_ts = pd.to_datetime(row.get("timestamp"), utc=True, errors="coerce")
+        setup_ts = _resolve_entry_anchor_ts(row)
 
         sl = pd.to_numeric(row.get("sl"), errors="coerce")
         tp = pd.to_numeric(row.get("tp"), errors="coerce")
@@ -103,7 +115,7 @@ def apply_model_age_filter(
             keep.append(True)
             continue
 
-        setup_ts = pd.to_datetime(row.get("timestamp"), utc=True, errors="coerce")
+        setup_ts = _resolve_entry_anchor_ts(row)
         if pd.isna(setup_ts):
             keep.append(True)
             continue
@@ -120,7 +132,11 @@ def apply_model_age_filter(
 
 
 def select_newest_live_candidate(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep at most one candidate per symbol/cycle, preferring the newest setup."""
+    """Keep at most one candidate per symbol/cycle, preferring the newest live-visible setup."""
     if df is None or df.empty:
         return df
-    return df.sort_values("timestamp").tail(1).copy()
+
+    tmp = df.copy()
+    tmp["_anchor_ts"] = tmp.apply(_resolve_entry_anchor_ts, axis=1)
+    tmp = tmp.sort_values("_anchor_ts").tail(1).drop(columns=["_anchor_ts"], errors="ignore")
+    return tmp.copy()

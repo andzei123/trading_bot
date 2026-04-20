@@ -26,6 +26,9 @@ def _entries_to_df(entries: list[Any], *, symbol: str) -> pd.DataFrame:
             {
                 "timestamp": ts,
                 "signal_ts": get("signal_ts", None),
+                "visible_ts": get("visible_ts", None),
+                "pipeline_visible_ts": get("pipeline_visible_ts", None),
+                "confirm_ts": get("confirm_ts", None),
                 "model": get("model", ""),
                 "side": get("side", ""),
                 "entry": get("entry", None),
@@ -68,4 +71,10 @@ def _entries_to_df(entries: list[Any], *, symbol: str) -> pd.DataFrame:
     df["timestamp"] = _safe_to_datetime_utc(df["timestamp"])
     if "signal_ts" in df.columns:
         df["signal_ts"] = _safe_to_datetime_utc(df["signal_ts"])
+    if "visible_ts" in df.columns:
+        df["visible_ts"] = _safe_to_datetime_utc(df["visible_ts"])
+    if "pipeline_visible_ts" in df.columns:
+        df["pipeline_visible_ts"] = _safe_to_datetime_utc(df["pipeline_visible_ts"])
+    if "confirm_ts" in df.columns:
+        df["confirm_ts"] = _safe_to_datetime_utc(df["confirm_ts"])
     return df
