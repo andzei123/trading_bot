@@ -482,7 +482,7 @@ def generate_trend_entries(
     if debug_entry_filters:
         try:
             base_lbl = ((c["sub_label"] == "TDP_TOP") & dev_up_recent).fillna(False)
-            mismatch = (base_lbl & (c["htf_trend"] != "DOWN")).fillna(False)
+            mismatch = (base_lbl & (c["phase"] != "PHASE_TREND_DOWN")).fillna(False)
             n_mismatch = int(mismatch.sum())
             if n_mismatch > 0:
                 _entry_diag_bump(ctx, "TREND_MISMATCH", n_mismatch)
@@ -499,7 +499,7 @@ def generate_trend_entries(
     reentry_short = (
             (c["sub_label"] == "TDP_TOP")
             & dev_up_recent
-            & (c["htf_trend"] == "DOWN")
+            & (c["phase"] == "PHASE_TREND_DOWN")
     )
 
     base_short = reentry_short.copy()
@@ -513,6 +513,14 @@ def generate_trend_entries(
             n_removed = int(removed.sum())
             if n_removed > 0:
                 _entry_diag_bump(ctx, "IMPULSE_TOO_SMALL", n_removed)
+                for j in np.where(removed.values)[0]:
+                    print(
+                        f"[ENTRY_DROP][{symbol}] "
+                        f"model=TDP_REENTRY side=SHORT "
+                        f"phase={str(c.loc[j, 'phase'])} "
+                        f"sub_label={str(c.loc[j, 'sub_label'])} "
+                        f"reason=IMPULSE_TOO_SMALL"
+                    )
         except Exception:
             pass
 
@@ -529,6 +537,13 @@ def generate_trend_entries(
         if (not np.isfinite(risk0)) or (risk0 <= 0):
             if debug_entry_filters:
                 _entry_diag_bump(ctx, "SL_INVALID", 1)
+                print(
+                    f"[ENTRY_DROP][{symbol}] "
+                    f"model=TDP_REENTRY side=SHORT "
+                    f"phase={str(c.loc[i, 'phase'])} "
+                    f"sub_label={str(c.loc[i, 'sub_label'])} "
+                    f"reason=SL_INVALID"
+                )
             continue
         risk = max(1e-9, risk0)
         tp = entry_px - rr * risk
@@ -566,7 +581,7 @@ def generate_trend_entries(
     if debug_entry_filters:
         try:
             base_lbl = ((c["sub_label"] == "TDP_BOT") & dev_dn_recent).fillna(False)
-            mismatch = (base_lbl & (c["htf_trend"] != "UP")).fillna(False)
+            mismatch = (base_lbl & (c["phase"] != "PHASE_TREND_UP")).fillna(False)
             n_mismatch = int(mismatch.sum())
             if n_mismatch > 0:
                 _entry_diag_bump(ctx, "TREND_MISMATCH", n_mismatch)
@@ -586,7 +601,7 @@ def generate_trend_entries(
             & dev_dn_recent
             & sweep
             & future_reclaim
-            & (c["htf_trend"] == "UP")
+            & (c["phase"] == "PHASE_TREND_UP")
     )
 
     base_long = reentry_long.copy()
@@ -596,7 +611,8 @@ def generate_trend_entries(
         imp_down = (c["impulse_recent"] & (c["impulse_dir"] == "DOWN")).fillna(False)
         had_imp_down = imp_down.rolling(had_imp_down_window).max().fillna(False)
         reentry_long &= had_imp_down
-
+    else:
+        had_imp_down = pd.Series(True, index=c.index)
     # ENTRY_DIAG: impulse gate removed candidates
     if debug_entry_filters:
         try:
@@ -604,6 +620,14 @@ def generate_trend_entries(
             n_removed = int(removed.sum())
             if n_removed > 0:
                 _entry_diag_bump(ctx, "IMPULSE_TOO_SMALL", n_removed)
+                for j in np.where(removed.values)[0]:
+                    print(
+                        f"[ENTRY_DROP][{symbol}] "
+                        f"model=TDP_REENTRY side=LONG "
+                        f"phase={str(c.loc[j, 'phase'])} "
+                        f"sub_label={str(c.loc[j, 'sub_label'])} "
+                        f"reason=IMPULSE_TOO_SMALL"
+                    )
         except Exception:
             pass
 
@@ -635,6 +659,13 @@ def generate_trend_entries(
         if (not np.isfinite(risk0)) or (risk0 <= 0):
             if debug_entry_filters:
                 _entry_diag_bump(ctx, "SL_INVALID", 1)
+                print(
+                    f"[ENTRY_DROP][{symbol}] "
+                    f"model=TDP_REENTRY side=LONG "
+                    f"phase={str(c.loc[j, 'phase'])} "
+                    f"sub_label={str(c.loc[j, 'sub_label'])} "
+                    f"reason=SL_INVALID"
+                )
             continue
         risk = max(1e-9, risk0)
         tp = entry_px + rr_long * risk
@@ -836,7 +867,14 @@ def _generate_range_top_short_v2(
 
         if j_reclaim is None:
             if debug_entry_filters:
-                _entry_diag_bump(_diag_df, "RETEST_FAIL", 1)  # (optional rename to RECLAIM_FAIL if you want)
+                _entry_diag_bump(_diag_df, "RETEST_FAIL", 1)
+                print(
+                    f"[ENTRY_DROP][{symbol}] "
+                    f"model=RANGE_TOP_SHORT_V2 side=SHORT "
+                    f"phase={str(c.loc[i, 'phase']) if 'phase' in c.columns else 'PHASE_RANGE'} "
+                    f"sub_label=RANGE_TOP_SHORT "
+                    f"reason=NO_RECLAIM"
+                )
                 print(f"{tag} RANGE_TOP_NO_RECLAIM idx={i} lookahead={reclaim_lookahead}")
             i += 1
             continue
@@ -855,9 +893,15 @@ def _generate_range_top_short_v2(
             ):
                 mid_k = float((float(c.loc[k, "range_hi"]) + float(c.loc[k, "range_lo"])) / 2.0)
                 if close_k <= mid_k:
-                    # too late (already at/under mid)
                     if debug_entry_filters:
                         _entry_diag_bump(_diag_df, "RR_TOO_LOW", 1)
+                        print(
+                            f"[ENTRY_DROP][{symbol}] "
+                            f"model=RANGE_TOP_SHORT_V2 side=SHORT "
+                            f"phase={str(c.loc[k, 'phase']) if 'phase' in c.columns else 'PHASE_RANGE'} "
+                            f"sub_label=RANGE_TOP_SHORT "
+                            f"reason=RR_TOO_LOW"
+                        )
                     continue
                 k_entry = k
                 break
@@ -885,6 +929,13 @@ def _generate_range_top_short_v2(
         if not (tp < entry_px < sl):
             if debug_entry_filters:
                 _entry_diag_bump(_diag_df, "SL_INVALID", 1)
+                print(
+                    f"[ENTRY_DROP][{symbol}] "
+                    f"model=RANGE_TOP_SHORT_V2 side=SHORT "
+                    f"phase={str(c.loc[k_entry, 'phase']) if 'phase' in c.columns else 'PHASE_RANGE'} "
+                    f"sub_label=RANGE_TOP_SHORT "
+                    f"reason=SL_INVALID"
+                )
             i = k_entry + 1
             continue
 

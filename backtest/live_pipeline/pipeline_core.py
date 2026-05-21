@@ -33,6 +33,7 @@ from backtest.live.pipeline_helpers.schema import LIVE_ENTRIES_COLUMNS, _empty_e
 from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.live.phase_router import decide_phase
 from backtest.risk.portfolio_correlation_caps import _bucket as _corr_bucket  # type: ignore
+from backtest.journal.identity import _ensure_canonical_setup_key
 
 
 def _invalidate_setups_hit_tp_sl(
@@ -361,9 +362,41 @@ def run_pipeline_once(
         except Exception:
             pass
 
+        # -------------------
+        # LIVE VISIBILITY TIMESTAMPS
+        # Minimal fix for discovery gate semantics:
+        # visible_ts / pipeline_visible_ts must exist before _entries_to_df()
+        # so shell discovery gate can use them instead of old setup timestamp.
+        # -------------------
+        if entries:
+            normalized_entries = []
+            for e in entries:
+                if isinstance(e, dict):
+                    row = dict(e)
+                    if row.get("visible_ts") is None:
+                        row["visible_ts"] = latest_ts
+                    if row.get("pipeline_visible_ts") is None:
+                        row["pipeline_visible_ts"] = latest_ts
+                    normalized_entries.append(row)
+                else:
+                    try:
+                        if getattr(e, "visible_ts", None) is None:
+                            setattr(e, "visible_ts", latest_ts)
+                    except Exception:
+                        pass
+                    try:
+                        if getattr(e, "pipeline_visible_ts", None) is None:
+                            setattr(e, "pipeline_visible_ts", latest_ts)
+                    except Exception:
+                        pass
+                    normalized_entries.append(e)
+
+            entries = normalized_entries
+
         df_e = _entries_to_df(entries, symbol=symbol)
         if df_e.empty:
             return _empty_entries_df()
+        df_e = _ensure_canonical_setup_key(df_e, symbol=symbol)
 
         # ensure phase column is filled
         if "phase" in df_e.columns:
@@ -533,6 +566,7 @@ def run_pipeline_once(
                 f"[BUDGET][{symbol}] kept={len(df_kept)} dropped={len(df_drop)} "
                 f"long_used={long_used:.4f} range_used={range_used:.4f} short_used={short_used:.4f} global_used={global_used:.4f}"
             )
+            print(f"[POST_BUDGET][{symbol}] rows_after_budget={len(df_e)}")
         else:
             print(
                 f"[BUDGET][{symbol}] kept=0 dropped=0 "
@@ -569,21 +603,37 @@ def run_pipeline_once(
 
         except Exception:
             pass
+        print(f"[POST_INVALIDATION][{symbol}] rows_after_invalidation={len(df_e)}")
+        if df_e is None or df_e.empty:
+            print(f"[POST_DROP][{symbol}] stage=INVALIDATION latest_ts={latest_ts}")
 
+        print(f"[POST_NORMALIZE_PRE][{symbol}] rows_before_normalize={len(df_e)} cols={list(df_e.columns)}")
         # -------------------
         # FINAL NORMALIZE
         # -------------------
-        for c in LIVE_ENTRIES_COLUMNS:
+        identity_columns = ["setup_created_ts", "canonical_setup_key", "lifecycle_state"]
+        final_columns = list(LIVE_ENTRIES_COLUMNS)
+        for c in identity_columns:
+            if c not in final_columns:
+                final_columns.append(c)
+        for c in final_columns:
             if c not in df_e.columns:
                 df_e[c] = np.nan
-        df_e = df_e.reindex(columns=LIVE_ENTRIES_COLUMNS)
+
+        df_e = df_e.reindex(columns=final_columns)
+        print(f"[POST_NORMALIZE][{symbol}] rows_after_reindex={len(df_e)}")
+
         df_e["symbol"] = symbol
-        # Use signal_ts for stable schema
+        df_e = _ensure_canonical_setup_key(df_e, symbol=symbol)
         if "signal_ts" not in df_e.columns or df_e["signal_ts"].isna().all():
             df_e["signal_ts"] = latest_ts
+
+        print(f"[POST_RETURN][{symbol}] rows_before_return={len(df_e)}")
         return df_e
 
+
     except Exception as e:
-        if debug:
-            print(f"[PIPELINE_CORE][{symbol}] fail-open exception: {repr(e)}")
+
+        print(f"[PIPELINE_CORE_FAIL][{symbol}] fail-open exception: {repr(e)}")
+
         return _empty_entries_df()

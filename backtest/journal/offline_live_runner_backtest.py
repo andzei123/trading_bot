@@ -46,6 +46,51 @@ def _build_setup_id(symbol: str, timestamp, model: str, side: str) -> str:
     return f"{str(symbol).upper()}|{ts}|{str(model)}|{str(side).upper()}"
 
 
+
+
+def _safe_ts(value) -> pd.Timestamp:
+    return pd.to_datetime(value, utc=True, errors="coerce")
+
+
+def _derive_canonical_setup_key(row: Dict, symbol: str, setup_created_ts: pd.Timestamp, model: str, side: str) -> str:
+    existing = row.get("canonical_setup_key")
+    if existing is not None and str(existing).strip() and str(existing).strip().lower() != "nan":
+        return str(existing)
+    ts = _safe_ts(row.get("setup_created_ts", setup_created_ts))
+    return f"{str(symbol).upper()}|{ts}|{str(model).upper()}|{str(side).upper()}"
+
+
+def _derive_execution_ts(row: Dict) -> tuple[pd.Timestamp, str]:
+    """Canonical execution/open clock: emitted timestamp after wait/freshness gates.
+
+    Backward compatible fallback: signal_ts -> timestamp. Never uses setup_created_ts
+    unless both emitted execution fields are absent.
+    """
+    for col in ("signal_ts", "timestamp"):
+        ts = _safe_ts(row.get(col))
+        if pd.notna(ts):
+            return ts, col
+    ts = _safe_ts(row.get("setup_created_ts"))
+    return ts, "setup_created_ts_fallback"
+
+
+def _append_skipped_position_gate(path: Path, row: Dict) -> None:
+    """Append skipped admission rows next to trades without polluting trade count files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "canonical_setup_key", "setup_id", "symbol", "model", "side",
+        "setup_created_ts", "signal_ts", "trade_open_ts", "opened_ts",
+        "execution_ts_source", "position_gate_reason", "skipped_open_position",
+        "lifecycle_state", "notes",
+    ]
+    exists = path.exists() and path.stat().st_size > 0
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if not exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in fields})
+
+
 def _load_fired_setup_ids(path: Path) -> Set[str]:
     if not path.exists():
         return set()
@@ -61,11 +106,16 @@ def _load_fired_setup_ids(path: Path) -> Set[str]:
 def _append_fired_setup(path: Path, row: Dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     out = {
+        "canonical_setup_key": row.get("canonical_setup_key"),
         "setup_id": row.get("setup_id"),
         "symbol": row.get("symbol"),
+        "setup_created_ts": row.get("setup_created_ts"),
         "timestamp": row.get("timestamp"),
         "model": row.get("model"),
         "side": row.get("side"),
+        "signal_ts": row.get("signal_ts"),
+        "observed_ts": row.get("observed_ts"),
+        "lifecycle_state": row.get("lifecycle_state", "FIRED"),
     }
     df = pd.DataFrame([out])
     if not path.exists() or path.stat().st_size == 0:
@@ -135,34 +185,56 @@ def _load_symbol_candles(candles_dir: Path, symbol: str) -> pd.DataFrame:
 
 def _ensure_trades_header(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    columns = [
+        "idx",
+        "timestamp",
+        "reason",
+        "side",
+        "entry",
+        "sl",
+        "tp",
+        "rr",
+        "R",
+        "phase",
+        "regime",
+        "score",
+        "notes",
+        "outcome",
+        "exit_price",
+        "exit_idx",
+        "bars_held",
+        "exit_timestamp",
+        "symbol",
+        "canonical_setup_key",
+        "setup_id",
+        "setup_created_ts",
+        "signal_ts",
+        "trade_open_ts",
+        "opened_ts",
+        "execution_ts_source",
+        "position_gate_reason",
+        "skipped_open_position",
+        "lifecycle_state",
+    ]
     if path.exists() and path.stat().st_size > 0:
+        # Backward compatibility: old trades.csv files remain readable and are
+        # migrated in-place by adding new metadata columns with empty values.
+        try:
+            existing = pd.read_csv(path)
+            changed = False
+            for col in columns:
+                if col not in existing.columns:
+                    existing[col] = ""
+                    changed = True
+            if changed or list(existing.columns) != columns:
+                existing = existing[[c for c in columns if c in existing.columns]]
+                existing.to_csv(path, index=False)
+        except Exception:
+            pass
         return
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(
-            [
-                "idx",
-                "timestamp",
-                "reason",
-                "side",
-                "entry",
-                "sl",
-                "tp",
-                "rr",
-                "R",
-                "phase",
-                "regime",
-                "score",
-                "notes",
-                "outcome",
-                "exit_price",
-                "exit_idx",
-                "bars_held",
-                "exit_timestamp",
-                "symbol",
-                "setup_id",
-            ]
-        )
+        w.writerow(columns)
 
 
 def _append_trade(path: Path, row: Dict) -> None:
@@ -191,7 +263,16 @@ def _append_trade(path: Path, row: Dict) -> None:
         "bars_held",
         "exit_timestamp",
         "symbol",
+        "canonical_setup_key",
         "setup_id",
+        "setup_created_ts",
+        "signal_ts",
+        "trade_open_ts",
+        "opened_ts",
+        "execution_ts_source",
+        "position_gate_reason",
+        "skipped_open_position",
+        "lifecycle_state",
     ]
 
     file_exists = path.exists()
@@ -223,7 +304,16 @@ def _append_trade(path: Path, row: Dict) -> None:
             "bars_held": row.get("bars_held"),
             "exit_timestamp": row.get("exit_timestamp") or "",
             "symbol": row.get("symbol"),
+            "canonical_setup_key": row.get("canonical_setup_key"),
             "setup_id": row.get("setup_id"),
+            "setup_created_ts": row.get("setup_created_ts"),
+            "signal_ts": row.get("signal_ts"),
+            "trade_open_ts": row.get("trade_open_ts"),
+            "opened_ts": row.get("opened_ts"),
+            "execution_ts_source": row.get("execution_ts_source"),
+            "position_gate_reason": row.get("position_gate_reason"),
+            "skipped_open_position": row.get("skipped_open_position", False),
+            "lifecycle_state": row.get("lifecycle_state", "OPENED"),
         }
 
         writer.writerow(clean_row)
@@ -264,6 +354,11 @@ def main(argv: List[str] | None = None) -> int:
         "--out_trades",
         default="backtest/journal/trades.csv",
         help="Output trades.csv (will be appended/created)",
+    )
+    ap.add_argument(
+        "--out_skipped_position_gate",
+        default="backtest/journal/runner_skipped_position_gate.csv",
+        help="Output skipped rows caused by same-symbol open_position_exists gate",
     )
     ap.add_argument(
         "--fired_setups_csv",
@@ -341,6 +436,7 @@ def main(argv: List[str] | None = None) -> int:
 
     candles_dir = Path(args.candles_dir)
     out_trades = Path(args.out_trades)
+    out_skipped_position_gate = Path(args.out_skipped_position_gate)
     pf_path = Path(args.portfolio_state)
     fired_setups_path = Path(args.fired_setups_csv)
     fired_setup_ids = _load_fired_setup_ids(fired_setups_path)
@@ -435,6 +531,8 @@ def main(argv: List[str] | None = None) -> int:
             if df_e is None or df_e.empty:
                 continue
 
+            df_e = df_e.copy()
+            df_e["setup_created_ts"] = pd.to_datetime(df_e.get("setup_created_ts", df_e.get("timestamp")), utc=True, errors="coerce")
             entries = df_e.to_dict("records")
 
             if bool(ctx.get("use_wait_confirmation", False)):
@@ -453,18 +551,58 @@ def main(argv: List[str] | None = None) -> int:
                 sl = float(r.get("sl"))
                 tp = float(r.get("tp"))
 
-                setup_ts = pd.to_datetime(r.get("timestamp"), utc=True, errors="coerce")
-                if pd.isna(setup_ts):
+                model = str(r.get("model", ""))
+                setup_created_ts = _safe_ts(r.get("setup_created_ts", r.get("timestamp")))
+                signal_ts, execution_ts_source = _derive_execution_ts(dict(r))
+                if pd.isna(signal_ts):
                     continue
 
-                setup_id = _build_setup_id(sym, setup_ts, str(r.get("model", "")), side)
+                setup_id = _build_setup_id(sym, signal_ts, model, side)
+                canonical_setup_key = _derive_canonical_setup_key(dict(r), sym, setup_created_ts, model, side)
+
+                print(
+                    f"[EXEC_CLOCK] canonical={canonical_setup_key} "
+                    f"setup_created={setup_created_ts} signal={signal_ts} "
+                    f"trade_open={signal_ts} source={execution_ts_source}"
+                )
+
                 if setup_id in fired_setup_ids:
                     continue
 
                 try:
-                    entry_idx = int(df_full.index[df_full["timestamp"] == setup_ts][0])
+                    entry_idx = int(df_full.index[df_full["timestamp"] == signal_ts][0])
                 except Exception:
-                    entry_idx = int(df_full[df_full["timestamp"] <= setup_ts].index.max())
+                    try:
+                        entry_idx = int(df_full[df_full["timestamp"] <= signal_ts].index.max())
+                    except Exception:
+                        continue
+
+                active_until = open_position_until.get(sym)
+                if active_until is not None and entry_idx <= int(active_until):
+                    print(
+                        f"[POSITION_GATE] symbol={sym} canonical={canonical_setup_key} "
+                        f"skipped_open_position=True reason=open_position_exists"
+                    )
+                    _append_skipped_position_gate(
+                        out_skipped_position_gate,
+                        {
+                            "canonical_setup_key": canonical_setup_key,
+                            "setup_id": setup_id,
+                            "symbol": sym,
+                            "model": model,
+                            "side": side,
+                            "setup_created_ts": setup_created_ts.isoformat() if pd.notna(setup_created_ts) else "",
+                            "signal_ts": signal_ts.isoformat(),
+                            "trade_open_ts": signal_ts.isoformat(),
+                            "opened_ts": signal_ts.isoformat(),
+                            "execution_ts_source": execution_ts_source,
+                            "position_gate_reason": "open_position_exists",
+                            "skipped_open_position": True,
+                            "lifecycle_state": "SKIPPED_POSITION_GATE",
+                            "notes": "runner_position_gate",
+                        },
+                    )
+                    continue
 
                 res = sim.simulate(entry_idx=entry_idx, side=side, entry=entry, sl=sl, tp=tp)
 
@@ -482,7 +620,7 @@ def main(argv: List[str] | None = None) -> int:
                 rr = float(r.get("rr", 0.0) or 0.0)
                 score = float(r.get("score", rr) or rr)
                 trade_key = (
-                    str(setup_ts.isoformat()),
+                    str(signal_ts.isoformat()),
                     str(sym),
                     str(side),
                     float(entry),
@@ -500,8 +638,12 @@ def main(argv: List[str] | None = None) -> int:
                     {
                         "setup_id": setup_id,
                         "symbol": sym,
-                        "timestamp": setup_ts.isoformat(),
-                        "model": str(r.get("model", "")),
+                        "canonical_setup_key": canonical_setup_key,
+                        "setup_created_ts": setup_created_ts.isoformat() if pd.notna(setup_created_ts) else "",
+                        "timestamp": signal_ts.isoformat(),
+                        "signal_ts": signal_ts.isoformat(),
+                        "observed_ts": ts.isoformat() if isinstance(ts, pd.Timestamp) else str(ts),
+                        "model": model,
                         "side": side,
                     },
                 )
@@ -521,8 +663,8 @@ def main(argv: List[str] | None = None) -> int:
                     out_trades,
                     {
                         "idx": trade_idx,
-                        "timestamp": setup_ts.isoformat(),
-                        "reason": str(r.get("model", "")),
+                        "timestamp": signal_ts.isoformat(),
+                        "reason": model,
                         "side": side,
                         "entry": entry,
                         "sl": sl,
@@ -539,7 +681,16 @@ def main(argv: List[str] | None = None) -> int:
                         "bars_held": getattr(res, "bars_held", "") if res is not None else "",
                         "exit_timestamp": exit_ts_str,
                         "symbol": sym,
+                        "canonical_setup_key": canonical_setup_key,
                         "setup_id": setup_id,
+                        "setup_created_ts": setup_created_ts.isoformat() if pd.notna(setup_created_ts) else "",
+                        "signal_ts": signal_ts.isoformat(),
+                        "trade_open_ts": signal_ts.isoformat(),
+                        "opened_ts": signal_ts.isoformat(),
+                        "execution_ts_source": execution_ts_source,
+                        "position_gate_reason": "",
+                        "skipped_open_position": False,
+                        "lifecycle_state": "OPENED",
                     },
                 )
                 trade_idx += 1

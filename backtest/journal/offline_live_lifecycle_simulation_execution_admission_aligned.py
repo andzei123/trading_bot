@@ -508,6 +508,14 @@ def _build_setup_id(symbol: str, timestamp, model: str, side: str) -> str:
 
 
 
+def _derive_canonical_setup_key(row: Dict, symbol: str, setup_created_ts: pd.Timestamp, model: str, side: str) -> str:
+    existing = row.get("canonical_setup_key")
+    if existing is not None and str(existing).strip() and str(existing).strip().lower() != "nan":
+        return str(existing)
+    ts = pd.to_datetime(row.get("setup_created_ts", setup_created_ts), utc=True, errors="coerce")
+    return f"{str(symbol).upper()}|{ts}|{str(model).upper()}|{str(side).upper()}"
+
+
 def _load_fired_setup_ids(path: Path) -> Set[str]:
     if not path.exists():
         return set()
@@ -524,13 +532,16 @@ def _load_fired_setup_ids(path: Path) -> Set[str]:
 def _append_fired_setup(path: Path, row: Dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     out = {
+        "canonical_setup_key": row.get("canonical_setup_key"),
         "setup_id": row.get("setup_id"),
         "symbol": row.get("symbol"),
+        "setup_created_ts": row.get("setup_created_ts"),
         "timestamp": row.get("timestamp"),
         "model": row.get("model"),
         "side": row.get("side"),
         "signal_ts": row.get("signal_ts"),
         "observed_ts": row.get("observed_ts"),
+        "lifecycle_state": row.get("lifecycle_state", "FIRED"),
     }
     df = pd.DataFrame([out])
     if not path.exists() or path.stat().st_size == 0:
@@ -669,6 +680,7 @@ SETUP_LIFECYCLE_COLUMNS = [
     "exit_bar_low",
     "exit_bar_close",
     "same_bar_ambiguity",
+    "canonical_setup_key",
     "setup_id",
     "symbol",
     "model",
@@ -693,7 +705,13 @@ SETUP_LIFECYCLE_COLUMNS = [
     "age_minutes_at_death",
     "death_stage",
     "death_reason",
+    "signal_ts",
     "trade_open_ts",
+    "opened_ts",
+    "execution_ts_source",
+    "position_gate_reason",
+    "skipped_open_position",
+    "lifecycle_state",
     "trade_close_ts",
     "trade_lifetime_candles",
     "trade_lifetime_minutes",
@@ -752,6 +770,7 @@ TRADES_FULL_COLUMNS = [
     "exit_bar_close",
     "same_bar_ambiguity",
     "idx",
+    "canonical_setup_key",
     "setup_id",
     "symbol",
     "model",
@@ -761,7 +780,13 @@ TRADES_FULL_COLUMNS = [
     "pipeline_visible_ts",
     "first_seen_ts",
     "emit_ts",
+    "signal_ts",
     "trade_open_ts",
+    "opened_ts",
+    "execution_ts_source",
+    "position_gate_reason",
+    "skipped_open_position",
+    "lifecycle_state",
     "trade_close_ts",
     "trade_lifetime_candles",
     "trade_lifetime_minutes",
@@ -790,11 +815,26 @@ TRADES_FULL_COLUMNS = [
 
 def _ensure_csv(path: Path, columns: Iterable[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    columns = list(columns)
     if path.exists() and path.stat().st_size > 0:
+        # Backward compatibility: old lifecycle/trade CSVs remain readable and
+        # are migrated by adding newly introduced metadata columns empty.
+        try:
+            existing = pd.read_csv(path)
+            changed = False
+            for col in columns:
+                if col not in existing.columns:
+                    existing[col] = ""
+                    changed = True
+            if changed or list(existing.columns) != columns:
+                existing = existing[[c for c in columns if c in existing.columns]]
+                existing.to_csv(path, index=False)
+        except Exception:
+            pass
         return
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(list(columns))
+        writer.writerow(columns)
 
 
 
@@ -1052,6 +1092,7 @@ def main(argv: List[str] | None = None) -> int:
                     "exit_bar_low": "",
                     "exit_bar_close": "",
                     "same_bar_ambiguity": False,
+                    "canonical_setup_key": _derive_canonical_setup_key(raw, sym, setup_created_ts, model, side),
                     "setup_id": setup_id,
                     "symbol": sym,
                     "model": model,
@@ -1076,7 +1117,13 @@ def main(argv: List[str] | None = None) -> int:
                     "age_minutes_at_death": "",
                     "death_stage": "no_raw",
                     "death_reason": "",
+                    "signal_ts": "",
                     "trade_open_ts": "",
+                    "opened_ts": "",
+                    "execution_ts_source": "",
+                    "position_gate_reason": "",
+                    "skipped_open_position": False,
+                    "lifecycle_state": "RAW",
                     "trade_close_ts": "",
                     "trade_lifetime_candles": "",
                     "trade_lifetime_minutes": "",
@@ -1109,10 +1156,23 @@ def main(argv: List[str] | None = None) -> int:
                 wait_confirm_ts = pd.to_datetime(wait_row.get("timestamp"), utc=True, errors="coerce")
                 execution_ts = pd.Timestamp(wait_confirm_ts) if pd.notna(wait_confirm_ts) else pd.Timestamp(pipeline_visible_ts)
                 wait_row["execution_ts"] = execution_ts
+                wait_row["execution_ts_source"] = "wait_confirm_ts" if pd.notna(wait_confirm_ts) else "pipeline_visible_ts_fallback"
+                wait_row["signal_ts"] = execution_ts
                 wait_row["pipeline_visible_ts"] = pipeline_visible_ts
-                wait_row["timestamp"] = pipeline_visible_ts
+                # Canonical execution/open clock: emitted timestamp after wait confirmation.
+                # Do not use structural setup_created_ts for execution.
+                wait_row["timestamp"] = execution_ts
                 setup_id = _build_setup_id(sym, execution_ts, model, side)
+                print(
+                    f"[EXEC_CLOCK] canonical={base_lifecycle.get('canonical_setup_key', '')} "
+                    f"setup_created={setup_created_ts} signal={execution_ts} "
+                    f"trade_open={execution_ts} source={wait_row['execution_ts_source']}"
+                )
                 base_lifecycle["setup_id"] = setup_id
+                base_lifecycle["signal_ts"] = execution_ts.isoformat() if pd.notna(execution_ts) else ""
+                base_lifecycle["trade_open_ts"] = execution_ts.isoformat() if pd.notna(execution_ts) else ""
+                base_lifecycle["opened_ts"] = execution_ts.isoformat() if pd.notna(execution_ts) else ""
+                base_lifecycle["execution_ts_source"] = wait_row.get("execution_ts_source", "")
                 base_lifecycle["wait_confirm_ts"] = wait_confirm_ts.isoformat() if pd.notna(wait_confirm_ts) else ""
                 base_lifecycle["freshness_check_ts"] = pd.Timestamp(pipeline_visible_ts).isoformat()
                 base_lifecycle["setup_to_wait_confirm_minutes"] = _delta_minutes(setup_created_ts, wait_confirm_ts)
@@ -1185,9 +1245,16 @@ def main(argv: List[str] | None = None) -> int:
 
                 if sym in active_positions:
                     active = active_positions[sym]
-                    if active.close_ts is None or pipeline_visible_ts <= active.close_ts:
+                    if active.close_ts is None or execution_ts <= active.close_ts:
+                        print(
+                            f"[POSITION_GATE] symbol={sym} canonical={base_lifecycle.get('canonical_setup_key', '')} "
+                            f"skipped_open_position=True reason=open_position_exists"
+                        )
                         base_lifecycle["death_stage"] = "position_gate"
                         base_lifecycle["death_reason"] = "open_position_exists"
+                        base_lifecycle["position_gate_reason"] = "open_position_exists"
+                        base_lifecycle["skipped_open_position"] = True
+                        base_lifecycle["lifecycle_state"] = "SKIPPED_POSITION_GATE"
                         base_lifecycle["age_candles_at_death"] = _candles_between(df_full, pipeline_visible_ts, latest_ts)
                         base_lifecycle["age_minutes_at_death"] = _minutes(pipeline_visible_ts, latest_ts)
                         death_counts["position_gate"] = death_counts.get("position_gate", 0) + 1
@@ -1207,7 +1274,7 @@ def main(argv: List[str] | None = None) -> int:
                 base_lifecycle["death_stage"] = "emitted"
                 emitted_count += 1
 
-                entry_exec_ts = pd.to_datetime(emit_row.get("pipeline_visible_ts", emit_row.get("timestamp", pipeline_visible_ts)), utc=True, errors="coerce")
+                entry_exec_ts = pd.to_datetime(emit_row.get("signal_ts", emit_row.get("timestamp", execution_ts)), utc=True, errors="coerce")
                 try:
                     entry_idx = int(df_full[df_full["timestamp"] <= entry_exec_ts].index.max())
                 except Exception:
@@ -1232,7 +1299,7 @@ def main(argv: List[str] | None = None) -> int:
                 sim = ExecutionSimulator(df_full)
                 res = sim.simulate(entry_idx=entry_idx, side=side, entry=entry, sl=sl, tp=tp)
 
-                trade_open_ts = pd.to_datetime(df_full["timestamp"].iloc[entry_idx], utc=True, errors="coerce")
+                trade_open_ts = pd.to_datetime(entry_exec_ts, utc=True, errors="coerce")
                 trade_close_ts = None
                 if res is not None and getattr(res, "exit_idx", None) is not None:
                     exi = int(getattr(res, "exit_idx"))
@@ -1277,8 +1344,10 @@ def main(argv: List[str] | None = None) -> int:
                 _append_fired_setup(
                     fired_setups_path,
                     {
+                        "canonical_setup_key": base_lifecycle.get("canonical_setup_key", ""),
                         "setup_id": setup_id,
                         "symbol": sym,
+                        "setup_created_ts": setup_created_ts.isoformat() if pd.notna(setup_created_ts) else "",
                         "timestamp": execution_ts.isoformat() if pd.notna(execution_ts) else "",
                         "model": model,
                         "side": side,
@@ -1289,7 +1358,13 @@ def main(argv: List[str] | None = None) -> int:
                 last_fired_ts_map[(str(sym).upper(), str(model).upper(), str(side).upper())] = pd.Timestamp(wait_confirm_ts)
                 base_lifecycle["death_stage"] = "closed" if trade_close_ts is not None else "opened"
                 base_lifecycle["death_reason"] = "sim_closed" if trade_close_ts is not None else "sim_opened"
+                base_lifecycle["signal_ts"] = execution_ts.isoformat() if pd.notna(execution_ts) else ""
                 base_lifecycle["trade_open_ts"] = trade_open_ts.isoformat() if pd.notna(trade_open_ts) else ""
+                base_lifecycle["opened_ts"] = trade_open_ts.isoformat() if pd.notna(trade_open_ts) else ""
+                base_lifecycle["execution_ts_source"] = emit_row.get("execution_ts_source", "signal_ts")
+                base_lifecycle["position_gate_reason"] = ""
+                base_lifecycle["skipped_open_position"] = False
+                base_lifecycle["lifecycle_state"] = "CLOSED" if trade_close_ts is not None else "OPENED"
                 base_lifecycle["trade_close_ts"] = trade_close_ts.isoformat() if pd.notna(trade_close_ts) else ""
                 base_lifecycle["trade_lifetime_candles"] = _candles_between(df_full, trade_open_ts, trade_close_ts)
                 base_lifecycle["trade_lifetime_minutes"] = _minutes(trade_open_ts, trade_close_ts)
@@ -1385,6 +1460,7 @@ def main(argv: List[str] | None = None) -> int:
                         "exit_bar_close": trade_path.get("exit_bar_close", ""),
                         "same_bar_ambiguity": trade_path.get("same_bar_ambiguity", False),
                         "idx": trade_idx,
+                        "canonical_setup_key": base_lifecycle.get("canonical_setup_key", ""),
                         "setup_id": setup_id,
                         "symbol": sym,
                         "model": model,
@@ -1394,7 +1470,13 @@ def main(argv: List[str] | None = None) -> int:
                         "pipeline_visible_ts": pipeline_visible_ts.isoformat() if pd.notna(pipeline_visible_ts) else "",
                         "first_seen_ts": first_seen_ts.isoformat() if pd.notna(first_seen_ts) else "",
                         "emit_ts": emit_ts.isoformat(),
+                        "signal_ts": execution_ts.isoformat() if pd.notna(execution_ts) else "",
                         "trade_open_ts": trade_open_ts.isoformat() if pd.notna(trade_open_ts) else "",
+                        "opened_ts": trade_open_ts.isoformat() if pd.notna(trade_open_ts) else "",
+                        "execution_ts_source": emit_row.get("execution_ts_source", "signal_ts"),
+                        "position_gate_reason": "",
+                        "skipped_open_position": False,
+                        "lifecycle_state": "CLOSED" if trade_close_ts is not None else "OPENED",
                         "trade_close_ts": trade_close_ts.isoformat() if pd.notna(trade_close_ts) else "",
                         "trade_lifetime_candles": _candles_between(df_full, trade_open_ts, trade_close_ts),
                         "trade_lifetime_minutes": _minutes(trade_open_ts, trade_close_ts),

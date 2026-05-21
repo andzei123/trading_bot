@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Iterable
 import pandas as pd
 
+from backtest.journal.identity import _ensure_canonical_setup_key
+
 
 MODEL_MAX_AGE_CANDLES = {
     "RANGE_TOP_SHORT_V2": 3,
@@ -38,6 +40,7 @@ def filter_live_emit_candidates(
     """
     if df is None or df.empty:
         return df
+    df = _ensure_canonical_setup_key(df)
     if candles_df is None or candles_df.empty:
         return df
 
@@ -101,6 +104,7 @@ def apply_model_age_filter(
     """
     if out_df is None or out_df.empty:
         return out_df
+    out_df = _ensure_canonical_setup_key(out_df)
 
     latest_ts = pd.to_datetime(latest_ts, utc=True, errors="coerce")
     if pd.isna(latest_ts):
@@ -136,7 +140,7 @@ def select_newest_live_candidate(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
-    tmp = df.copy()
+    tmp = _ensure_canonical_setup_key(df).copy()
     tmp["_anchor_ts"] = tmp.apply(_resolve_entry_anchor_ts, axis=1)
     tmp = tmp.sort_values("_anchor_ts").tail(1).drop(columns=["_anchor_ts"], errors="ignore")
     return tmp.copy()

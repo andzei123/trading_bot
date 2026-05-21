@@ -5,8 +5,25 @@ from typing import Optional
 
 import pandas as pd
 
+from backtest.journal.identity import (
+    LIFECYCLE_CLOSED,
+    _append_terminal_lifecycle_row,
+    _ensure_canonical_setup_key,
+)
 
-POSITION_STATE_COLUMNS = ["symbol", "setup_id", "opened_ts", "status", "closed_ts", "close_reason"]
+
+POSITION_STATE_COLUMNS = [
+    "symbol",
+    "canonical_setup_key",
+    "setup_id",
+    "setup_created_ts",
+    "signal_ts",
+    "opened_ts",
+    "status",
+    "closed_ts",
+    "close_reason",
+    "lifecycle_state",
+]
 
 
 def _load_position_state(position_state_csv: Path) -> pd.DataFrame:
@@ -35,18 +52,22 @@ def _load_live_entries(out_csv: Path) -> pd.DataFrame:
         return pd.DataFrame()
     if df.empty:
         return df
-    if "setup_id" not in df.columns:
+    if "setup_id" not in df.columns and "canonical_setup_key" not in df.columns:
         return pd.DataFrame()
     if "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = _ensure_canonical_setup_key(df)
     return df
 
 
-def _lookup_entry_row(out_csv: Path, setup_id: str) -> Optional[pd.Series]:
+def _lookup_entry_row(out_csv: Path, setup_id: str, canonical_setup_key: str = "") -> Optional[pd.Series]:
     entries = _load_live_entries(out_csv)
     if entries.empty:
         return None
-    matches = entries.loc[entries["setup_id"].astype(str) == str(setup_id)].copy()
+    if canonical_setup_key and "canonical_setup_key" in entries.columns:
+        matches = entries.loc[entries["canonical_setup_key"].astype(str) == str(canonical_setup_key)].copy()
+    else:
+        matches = entries.loc[entries["setup_id"].astype(str) == str(setup_id)].copy()
     if matches.empty:
         return None
     if "timestamp" in matches.columns:
@@ -138,11 +159,12 @@ def close_symbol_if_hit(
     changed = False
     for idx, row in open_rows.iterrows():
         setup_id = str(row.get("setup_id", "") or "")
+        canonical_setup_key = str(row.get("canonical_setup_key", "") or "")
         opened_ts = pd.to_datetime(row.get("opened_ts"), utc=True, errors="coerce")
-        if not setup_id or pd.isna(opened_ts):
+        if (not setup_id and not canonical_setup_key) or pd.isna(opened_ts):
             continue
 
-        entry_row = _lookup_entry_row(out_csv, setup_id)
+        entry_row = _lookup_entry_row(out_csv, setup_id, canonical_setup_key)
         if entry_row is None:
             continue
 
@@ -163,12 +185,28 @@ def close_symbol_if_hit(
         if close_ts is None or close_reason is None:
             continue
 
+        if "closed_ts" in state.columns:
+            state["closed_ts"] = state["closed_ts"].astype("object")
+        if "close_reason" in state.columns:
+            state["close_reason"] = state["close_reason"].astype("object")
+
         state.loc[idx, "status"] = "CLOSED"
         state.loc[idx, "closed_ts"] = str(pd.Timestamp(close_ts).tz_convert("UTC"))
         state.loc[idx, "close_reason"] = close_reason
+        state.loc[idx, "lifecycle_state"] = LIFECYCLE_CLOSED
         changed = True
-        print(f"[POSITION_CLOSER][{sym}] setup_id={setup_id} closed={close_reason} close_ts={close_ts}")
-
+        terminal_row = row.to_dict()
+        terminal_row["canonical_setup_key"] = canonical_setup_key
+        terminal_row["setup_id"] = setup_id
+        terminal_row["symbol"] = sym
+        _append_terminal_lifecycle_row(
+            position_state_csv.parent / "terminal_lifecycle_registry.csv",
+            row=terminal_row,
+            terminal_stage=LIFECYCLE_CLOSED,
+            terminal_ts=close_ts,
+            reason=str(close_reason),
+        )
+        print(f"[POSITION_CLOSER][{sym}] canonical={canonical_setup_key} setup_id={setup_id} closed={close_reason} close_ts={close_ts}")
     if changed:
         state.to_csv(position_state_csv, index=False)
 
