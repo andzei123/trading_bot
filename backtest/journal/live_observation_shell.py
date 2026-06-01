@@ -67,6 +67,18 @@ FLOW_LOG_COLUMNS = [
     "entry_anchor_ts",
     "first_seen_ts",
     "age_candles_at_first_seen",
+    "intended_entry_ts",
+    "entry_window_expires_ts",
+    "entry_delay_minutes",
+    "entry_timing_valid",
+    "execution_ts_source",
+    "trigger_refresh_candidate",
+    "trigger_refresh_reason",
+    "old_canonical_setup_key",
+    "original_setup_created_ts",
+    "candidate_latest_ts",
+    "range_retest_score",
+    "trigger_refresh_applied",
     "age_minutes_at_first_seen",
     "phase",
     "model_summary_raw",
@@ -367,14 +379,198 @@ def _position_is_open(symbol: str, position_state_csv: Path) -> bool:
     return str(symbol).upper() in _load_open_positions(position_state_csv)
 
 
-def _mark_position_open(symbol: str, setup_id: str, opened_ts: pd.Timestamp, position_state_csv: Path, canonical_setup_key: str = "", setup_created_ts=pd.NaT, signal_ts=pd.NaT) -> None:
+def _position_overlaps_at_open(symbol: str, intended_open_ts, position_state_csv: Path) -> bool:
+    """
+    Return True if intended_open_ts falls inside any persisted same-symbol
+    position window using half-open interval semantics:
+        opened_ts <= intended_open_ts < closed_ts
+
+    Null closed_ts is treated as open-ended.
+    """
+    if not position_state_csv.exists() or position_state_csv.stat().st_size == 0:
+        return False
+
+    intended_open_ts = pd.to_datetime(intended_open_ts, utc=True, errors="coerce")
+    if pd.isna(intended_open_ts):
+        return False
+
+    try:
+        df = pd.read_csv(position_state_csv)
+    except Exception:
+        return False
+
+    if df.empty or "symbol" not in df.columns or "opened_ts" not in df.columns:
+        return False
+
+    work = df.copy()
+    work["symbol"] = work["symbol"].astype(str).str.upper()
+    work = work.loc[work["symbol"] == str(symbol).upper()].copy()
+    if work.empty:
+        return False
+
+    work["opened_ts"] = pd.to_datetime(work["opened_ts"], utc=True, errors="coerce")
+    if "closed_ts" in work.columns:
+        work["closed_ts"] = pd.to_datetime(work["closed_ts"], utc=True, errors="coerce")
+    else:
+        work["closed_ts"] = pd.NaT
+
+    overlap_mask = (
+        work["opened_ts"].notna()
+        & (work["opened_ts"] <= intended_open_ts)
+        & (
+            work["closed_ts"].isna()
+            | (intended_open_ts < work["closed_ts"])
+        )
+    )
+    return bool(overlap_mask.any())
+
+
+def _pending_position_overlaps_at_open(
+    symbol: str,
+    intended_open_ts,
+    pending_open_intervals: Dict[str, List[tuple]],
+) -> bool:
+    """Return True if candidate open interval overlaps accepted rows in this batch."""
+    intended_open_ts = pd.to_datetime(intended_open_ts, utc=True, errors="coerce")
+    if pd.isna(intended_open_ts):
+        return False
+
+    candidate_symbol = str(symbol).upper()
+    candidate_close_ts = pd.NaT
+
+    for opened_ts, closed_ts in pending_open_intervals.get(candidate_symbol, []):
+        opened_ts = pd.to_datetime(opened_ts, utc=True, errors="coerce")
+        closed_ts = pd.to_datetime(closed_ts, utc=True, errors="coerce")
+        if pd.isna(opened_ts):
+            continue
+
+        pending_ends_after_candidate_opens = (
+            pd.isna(closed_ts)
+            or intended_open_ts < closed_ts
+        )
+        candidate_ends_after_pending_opens = (
+            pd.isna(candidate_close_ts)
+            or opened_ts < candidate_close_ts
+        )
+
+        if pending_ends_after_candidate_opens and candidate_ends_after_pending_opens:
+            return True
+
+    return False
+
+
+def _candidate_intended_open_ts(row: pd.Series):
+    for ts_col in ("trade_open_ts", "signal_ts", "opened_ts", "timestamp"):
+        if ts_col in row.index:
+            ts = pd.to_datetime(row.get(ts_col), utc=True, errors="coerce")
+            if pd.notna(ts):
+                return ts
+    return pd.NaT
+
+
+def _filter_position_overlap_candidates(
+    *,
+    out_df: pd.DataFrame,
+    symbol: str,
+    position_state_csv: Path,
+    flow_log_csv: Path,
+    flow_row: Dict[str, object],
+) -> tuple[pd.DataFrame, int]:
+    if out_df is None or out_df.empty:
+        return out_df, 0
+
+    accepted_indices = []
+    skipped_count = 0
+    pending_open_intervals: Dict[str, List[tuple]] = {}
+
+    for row_idx, candidate_row in out_df.iterrows():
+        candidate_symbol = str(candidate_row.get("symbol", symbol)).upper()
+        intended_open_ts = _candidate_intended_open_ts(candidate_row)
+
+        existing_overlap = _position_overlaps_at_open(
+            candidate_symbol,
+            intended_open_ts,
+            position_state_csv,
+        )
+        pending_overlap = _pending_position_overlaps_at_open(
+            candidate_symbol,
+            intended_open_ts,
+            pending_open_intervals,
+        )
+
+        if existing_overlap or pending_overlap:
+            skipped_count += 1
+            print(
+                f"[POSITION_GATE] symbol={candidate_symbol} "
+                f"canonical={candidate_row.get('canonical_setup_key', '')} "
+                f"skipped_open_position=True "
+                f"intended_open_ts={intended_open_ts} "
+                f"reason=open_position_exists_at_intended_open_ts"
+            )
+
+            skipped_flow_row = dict(flow_row)
+            skipped_flow_row["symbol"] = candidate_symbol
+            skipped_flow_row["skipped_open_position"] = True
+            skipped_flow_row["death_stage"] = "position_gate"
+            skipped_flow_row["death_reason"] = "open_position_exists_at_intended_open_ts"
+            skipped_flow_row["notes"] = "blocked_by_open_position_at_intended_open_ts"
+            skipped_flow_row["emitted_count"] = 0
+
+            for col in (
+                "setup_id",
+                "canonical_setup_key",
+                "lifecycle_state",
+                "model",
+                "side",
+                "setup_created_ts",
+                "wait_confirm_ts",
+                "wait_context_source",
+                "visible_ts",
+                "entry_anchor_ts",
+                "first_seen_ts",
+                "timestamp",
+                "signal_ts",
+                "trade_open_ts",
+                "opened_ts",
+            ):
+                if col in out_df.columns:
+                    skipped_flow_row[col] = candidate_row.get(col)
+
+            _append_flow_row(flow_log_csv, skipped_flow_row)
+            continue
+
+        accepted_indices.append(row_idx)
+        if pd.notna(intended_open_ts):
+            pending_open_intervals.setdefault(candidate_symbol, []).append(
+                (intended_open_ts, pd.NaT)
+            )
+
+    if not accepted_indices:
+        return out_df.iloc[0:0].copy(), skipped_count
+
+    return out_df.loc[accepted_indices].copy(), skipped_count
+
+def _mark_position_open(
+    symbol: str,
+    setup_id: str,
+    opened_ts: pd.Timestamp,
+    position_state_csv: Path,
+    canonical_setup_key: str = "",
+    setup_created_ts=pd.NaT,
+    signal_ts=pd.NaT,
+    wait_confirm_ts=pd.NaT,
+    wait_context_source: str = "",
+) -> None:
     _ensure_parent(position_state_csv)
+
     row = pd.DataFrame([
         {
             "symbol": str(symbol).upper(),
             "canonical_setup_key": str(canonical_setup_key or ""),
             "setup_id": str(setup_id),
             "setup_created_ts": pd.to_datetime(setup_created_ts, utc=True, errors="coerce"),
+            "wait_confirm_ts": pd.to_datetime(wait_confirm_ts, utc=True, errors="coerce"),
+            "wait_context_source": str(wait_context_source or ""),
             "signal_ts": pd.to_datetime(signal_ts, utc=True, errors="coerce"),
             "opened_ts": pd.to_datetime(opened_ts, utc=True, errors="coerce"),
             "status": "OPEN",
@@ -383,11 +579,26 @@ def _mark_position_open(symbol: str, setup_id: str, opened_ts: pd.Timestamp, pos
             "lifecycle_state": LIFECYCLE_OPENED,
         }
     ])
+
+    cols = [
+        "symbol",
+        "canonical_setup_key",
+        "setup_id",
+        "setup_created_ts",
+        "wait_confirm_ts",
+        "wait_context_source",
+        "signal_ts",
+        "opened_ts",
+        "status",
+        "closed_ts",
+        "close_reason",
+        "lifecycle_state",
+    ]
+
     if not position_state_csv.exists() or position_state_csv.stat().st_size == 0:
-        row.to_csv(position_state_csv, index=False)
+        row[cols].to_csv(position_state_csv, index=False)
         return
 
-    cols = ["symbol", "canonical_setup_key", "setup_id", "setup_created_ts", "signal_ts", "opened_ts", "status", "closed_ts", "close_reason", "lifecycle_state"]
     try:
         existing = pd.read_csv(position_state_csv)
         if existing.empty:
@@ -404,11 +615,12 @@ def _mark_position_open(symbol: str, setup_id: str, opened_ts: pd.Timestamp, pos
         mask = (
             existing["symbol"].astype(str).str.upper() == str(symbol).upper()
         ) & (
-            existing["status"].astype(str).str.upper() == "OPEN")
+            existing["status"].astype(str).str.upper() == "OPEN"
+        )
         existing = existing.loc[~mask].copy()
-    combined = pd.concat([existing, row], ignore_index=True)
-    combined.to_csv(position_state_csv, index=False)
 
+    combined = pd.concat([existing, row[cols]], ignore_index=True)
+    combined.to_csv(position_state_csv, index=False)
 
 def _load_fired_setup_ids(path: Path) -> Set[str]:
     if not path.exists():
@@ -425,7 +637,19 @@ def _load_fired_setup_ids(path: Path) -> Set[str]:
 def _append_fired_setup_ids(path: Path, rows: pd.DataFrame) -> None:
     if rows is None or rows.empty:
         return
+
     rows = _ensure_canonical_setup_key(rows)
+
+    def _created_from_canonical(k):
+        try:
+            return str(k).split("|", 3)[3]
+        except Exception:
+            return pd.NaT
+
+    canonical_created = rows["canonical_setup_key"].apply(_created_from_canonical)
+
+    # Preserve ORIGINAL structural setup timestamp
+    rows["setup_created_ts"] = canonical_created
 
     signal_fallback = rows.get("signal_ts", rows.get("timestamp"))
 
@@ -433,13 +657,19 @@ def _append_fired_setup_ids(path: Path, rows: pd.DataFrame) -> None:
         rows["trade_open_ts"] = signal_fallback
     else:
         rows["trade_open_ts"] = rows["trade_open_ts"].fillna(signal_fallback)
-        rows.loc[rows["trade_open_ts"].astype(str).str.strip().eq(""), "trade_open_ts"] = signal_fallback
+        rows.loc[
+            rows["trade_open_ts"].astype(str).str.strip().eq(""),
+            "trade_open_ts"
+        ] = signal_fallback
 
     if "opened_ts" not in rows.columns:
         rows["opened_ts"] = signal_fallback
     else:
         rows["opened_ts"] = rows["opened_ts"].fillna(signal_fallback)
-        rows.loc[rows["opened_ts"].astype(str).str.strip().eq(""), "opened_ts"] = signal_fallback
+        rows.loc[
+            rows["opened_ts"].astype(str).str.strip().eq(""),
+            "opened_ts"
+        ] = signal_fallback
 
     if "execution_ts_source" not in rows.columns:
         rows["execution_ts_source"] = (
@@ -448,9 +678,66 @@ def _append_fired_setup_ids(path: Path, rows: pd.DataFrame) -> None:
             else "timestamp"
         )
     else:
-        fallback_source = "signal_ts" if "signal_ts" in rows.columns else "timestamp"
-        rows["execution_ts_source"] = rows["execution_ts_source"].fillna(fallback_source)
-        rows.loc[rows["execution_ts_source"].astype(str).str.strip().eq(""), "execution_ts_source"] = fallback_source
+        fallback_source = (
+            "signal_ts"
+            if "signal_ts" in rows.columns
+            else "timestamp"
+        )
+
+        rows["execution_ts_source"] = (
+            rows["execution_ts_source"].fillna(fallback_source)
+        )
+
+        rows.loc[
+            rows["execution_ts_source"].astype(str).str.strip().eq(""),
+            "execution_ts_source"
+        ] = fallback_source
+
+    # Wait confirmation metadata
+    if "wait_confirm_ts" not in rows.columns:
+        rows["wait_confirm_ts"] = (
+            pd.to_datetime(
+                rows["setup_created_ts"],
+                utc=True,
+                errors="coerce",
+            ) + pd.Timedelta(minutes=15)
+        )
+    else:
+        fallback_wait = (
+            pd.to_datetime(
+                rows["setup_created_ts"],
+                utc=True,
+                errors="coerce",
+            ) + pd.Timedelta(minutes=15)
+        )
+
+        rows["wait_confirm_ts"] = (
+            rows["wait_confirm_ts"].fillna(fallback_wait)
+        )
+
+        rows.loc[
+            rows["wait_confirm_ts"].astype(str).str.strip().eq(""),
+            "wait_confirm_ts"
+        ] = fallback_wait
+
+    if "wait_context_source" not in rows.columns:
+        rows["wait_context_source"] = (
+            "setup_created_ts_plus_1_candle"
+        )
+    else:
+        rows["wait_context_source"] = (
+            rows["wait_context_source"]
+            .fillna("setup_created_ts_plus_1_candle")
+        )
+
+        rows.loc[
+            rows["wait_context_source"]
+            .astype(str)
+            .str.strip()
+            .eq(""),
+            "wait_context_source"
+        ] = "setup_created_ts_plus_1_candle"
+
     use_cols = [
         c for c in (
             "canonical_setup_key",
@@ -458,6 +745,8 @@ def _append_fired_setup_ids(path: Path, rows: pd.DataFrame) -> None:
             "symbol",
             "timestamp",
             "setup_created_ts",
+            "wait_confirm_ts",
+            "wait_context_source",
             "model",
             "side",
             "signal_ts",
@@ -469,11 +758,14 @@ def _append_fired_setup_ids(path: Path, rows: pd.DataFrame) -> None:
         )
         if c in rows.columns
     ]
+
     if not use_cols:
         return
 
     out = rows[use_cols].copy()
+
     _ensure_parent(path)
+
     if not path.exists() or path.stat().st_size == 0:
         out.to_csv(path, index=False)
     else:
@@ -590,6 +882,18 @@ def _make_flow_row(*, cycle_ts: pd.Timestamp, symbol: str, latest_ts: Optional[p
         "entry_anchor_ts": pd.NaT,
         "first_seen_ts": pd.NaT,
         "age_candles_at_first_seen": 0,
+        "intended_entry_ts": pd.NaT,
+        "entry_window_expires_ts": pd.NaT,
+        "entry_delay_minutes": 0.0,
+        "entry_timing_valid": False,
+        "execution_ts_source": "",
+        "trigger_refresh_candidate": False,
+        "trigger_refresh_reason": "",
+        "old_canonical_setup_key": "",
+        "original_setup_created_ts": "",
+        "candidate_latest_ts": "",
+        "range_retest_score": 0.0,
+        "trigger_refresh_applied": False,
         "age_minutes_at_first_seen": 0.0,
 
         # summaries / diagnostics
@@ -715,6 +1019,437 @@ def _time_alignment_audit(
     except Exception as e:
         print(f"[TIME_AUDIT_ERROR][{symbol}] {type(e).__name__}: {e}")
 
+def _apply_execution_window_guard(
+    *,
+    wait_checked: pd.DataFrame,
+    latest_ts: pd.Timestamp,
+    symbol: str,
+    flow_log_csv: Path,
+    flow_row: Dict[str, object],
+) -> pd.DataFrame:
+    """
+    Enforce entry timing semantics after wait confirmation accepts.
+
+    setup_created_ts / wait_confirm_ts remain immutable identity/confirmation
+    timestamps. Execution is only allowed at wait_confirm_ts within a small
+    model-specific window. The live/latest cycle timestamp is observability
+    only and must not become signal_ts/opened_ts for an old setup.
+    """
+    if wait_checked is None or wait_checked.empty:
+        return wait_checked
+
+    out = wait_checked.copy()
+
+    out["setup_created_ts"] = pd.to_datetime(
+        out.get("setup_created_ts", out.get("timestamp", pd.NaT)),
+        utc=True,
+        errors="coerce",
+    )
+
+    if "wait_confirm_ts" not in out.columns:
+        out["wait_confirm_ts"] = pd.NaT
+
+    out["wait_confirm_ts"] = pd.to_datetime(
+        out["wait_confirm_ts"],
+        utc=True,
+        errors="coerce",
+    )
+
+    fallback_wait_confirm_ts = out["setup_created_ts"] + pd.Timedelta(minutes=15)
+    out["wait_confirm_ts"] = out["wait_confirm_ts"].fillna(fallback_wait_confirm_ts)
+
+    if "wait_context_source" not in out.columns:
+        out["wait_context_source"] = "setup_created_ts_plus_1_candle"
+    else:
+        out["wait_context_source"] = (
+            out["wait_context_source"]
+            .fillna("setup_created_ts_plus_1_candle")
+        )
+        out.loc[
+            out["wait_context_source"].astype(str).str.strip().eq(""),
+            "wait_context_source",
+        ] = "setup_created_ts_plus_1_candle"
+
+    model_window_candles = (
+        out.get("model", pd.Series("", index=out.index))
+        .astype(str)
+        .map({
+            "RANGE_TOP_SHORT_V2": 4,
+            "TDP_REENTRY": 16,
+        })
+        .fillna(1)
+        .astype(int)
+    )
+
+    out["intended_entry_ts"] = out["wait_confirm_ts"]
+    out["entry_window_expires_ts"] = (
+        out["wait_confirm_ts"]
+        + pd.to_timedelta(model_window_candles * 15, unit="m")
+    )
+
+    current_latest_ts = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+    out["entry_delay_minutes"] = (
+        (current_latest_ts - out["wait_confirm_ts"]).dt.total_seconds() / 60.0
+    )
+
+    out["signal_ts"] = out["wait_confirm_ts"]
+    out["timestamp"] = out["wait_confirm_ts"]
+    out["trade_open_ts"] = out["wait_confirm_ts"]
+    out["opened_ts"] = out["wait_confirm_ts"]
+    out["execution_ts_source"] = "wait_confirm_ts"
+
+    timing_valid_mask = current_latest_ts <= out["entry_window_expires_ts"]
+    out["entry_timing_valid"] = timing_valid_mask
+
+    stale_exec_df = out.loc[~timing_valid_mask].copy()
+    if not stale_exec_df.empty:
+        for _, stale_exec_row in stale_exec_df.iterrows():
+            stale_flow_row = dict(flow_row)
+            stale_flow_row["symbol"] = str(stale_exec_row.get("symbol", symbol)).upper()
+            stale_flow_row["setup_id"] = stale_exec_row.get("setup_id", stale_flow_row.get("setup_id", ""))
+            stale_flow_row["canonical_setup_key"] = stale_exec_row.get("canonical_setup_key", stale_flow_row.get("canonical_setup_key", ""))
+            stale_flow_row["model"] = stale_exec_row.get("model", stale_flow_row.get("model", ""))
+            stale_flow_row["side"] = str(stale_exec_row.get("side", stale_flow_row.get("side", ""))).upper()
+            stale_flow_row["setup_created_ts"] = stale_exec_row.get("setup_created_ts", pd.NaT)
+            stale_flow_row["wait_confirm_ts"] = stale_exec_row.get("wait_confirm_ts", pd.NaT)
+            stale_flow_row["wait_context_source"] = stale_exec_row.get("wait_context_source", "setup_created_ts_plus_1_candle")
+            stale_flow_row["visible_ts"] = stale_exec_row.get("visible_ts", pd.NaT)
+            stale_flow_row["entry_anchor_ts"] = stale_exec_row.get("entry_anchor_ts", pd.NaT)
+            stale_flow_row["first_seen_ts"] = stale_exec_row.get("visible_ts", pd.NaT)
+            stale_flow_row["intended_entry_ts"] = stale_exec_row.get("intended_entry_ts", pd.NaT)
+            stale_flow_row["entry_window_expires_ts"] = stale_exec_row.get("entry_window_expires_ts", pd.NaT)
+            stale_flow_row["entry_delay_minutes"] = float(stale_exec_row.get("entry_delay_minutes", 0.0) or 0.0)
+            stale_flow_row["entry_timing_valid"] = False
+            stale_flow_row["execution_ts_source"] = "wait_confirm_ts"
+            stale_flow_row["trigger_refresh_candidate"] = bool(stale_exec_row.get("trigger_refresh_candidate", False))
+            stale_flow_row["trigger_refresh_reason"] = str(stale_exec_row.get("trigger_refresh_reason", ""))
+            stale_flow_row["old_canonical_setup_key"] = str(stale_exec_row.get("old_canonical_setup_key", ""))
+            stale_flow_row["original_setup_created_ts"] = stale_exec_row.get("original_setup_created_ts", pd.NaT)
+            stale_flow_row["candidate_latest_ts"] = stale_exec_row.get("candidate_latest_ts", pd.NaT)
+            stale_flow_row["range_retest_score"] = float(stale_exec_row.get("range_retest_score", 0.0) or 0.0)
+            stale_flow_row["trigger_refresh_applied"] = bool(stale_exec_row.get("trigger_refresh_applied", False))
+            stale_flow_row["after_wait_count"] = 0
+            stale_flow_row["after_freshness_count"] = 0
+            stale_flow_row["after_idempotency_count"] = 0
+            stale_flow_row["after_stale_count"] = 0
+            stale_flow_row["after_per_cycle_guard_count"] = 0
+            stale_flow_row["emitted_count"] = 0
+            stale_flow_row["notes"] = "entry_window_expired"
+            stale_flow_row["death_stage"] = "stale"
+            stale_flow_row["death_reason"] = "stale_execution_window"
+            _append_flow_row(flow_log_csv, stale_flow_row)
+
+    return out.loc[timing_valid_mask].copy()
+
+def _canonical_created_ts_for_diagnostics(canonical_setup_key: object):
+    try:
+        return pd.to_datetime(
+            str(canonical_setup_key).split("|", 3)[3],
+            utc=True,
+            errors="coerce",
+        )
+    except Exception:
+        return pd.NaT
+
+
+
+def _range_trigger_current_candle_has_fresh_risk_anchor(
+    *,
+    row: pd.Series,
+    candles_df: pd.DataFrame,
+    candidate_latest_ts: pd.Timestamp,
+) -> bool:
+    """
+    Return True only when the existing entry/sl/tp on the candidate row
+    are plausibly based on the fresh trigger candle context.
+
+    This is intentionally conservative. A coincidental old entry inside the
+    fresh candle is not enough. The entry must be inside the candidate candle,
+    close enough to that candle close, directionally valid, and either the row
+    timestamps are already near candidate_latest_ts or the diagnostics explicitly
+    identified candidate_latest_ts as the fresh RANGE retest trigger.
+    """
+    if candles_df is None or candles_df.empty or "timestamp" not in candles_df.columns:
+        return False
+
+    candidate_latest_ts = pd.to_datetime(candidate_latest_ts, utc=True, errors="coerce")
+    if pd.isna(candidate_latest_ts):
+        return False
+
+    c = candles_df.copy()
+    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True, errors="coerce")
+    c = c.dropna(subset=["timestamp"]).sort_values("timestamp")
+    hit = c.loc[c["timestamp"] == candidate_latest_ts]
+    if hit.empty:
+        return False
+
+    candle = hit.iloc[-1]
+    try:
+        high = float(candle.get("high"))
+        low = float(candle.get("low"))
+        close = float(candle.get("close"))
+        candle_range = high - low
+        entry = float(pd.to_numeric(pd.Series([row.get("entry")]), errors="coerce").iloc[0])
+        sl = float(pd.to_numeric(pd.Series([row.get("sl")]), errors="coerce").iloc[0])
+        tp = float(pd.to_numeric(pd.Series([row.get("tp")]), errors="coerce").iloc[0])
+    except Exception:
+        return False
+
+    if candle_range <= 0:
+        return False
+
+    if not (low <= entry <= high):
+        return False
+
+    entry_close_distance = abs(entry - close) / candle_range
+    if entry_close_distance > 0.75:
+        return False
+
+    side = str(row.get("side", "")).upper()
+    if side == "SHORT":
+        direction_valid = bool(sl > entry and tp < entry)
+    elif side == "LONG":
+        direction_valid = bool(sl < entry and tp > entry)
+    else:
+        direction_valid = False
+
+    if not direction_valid:
+        return False
+
+    near_candidate_ts = False
+    for ts_col in ("setup_created_ts", "timestamp", "entry_anchor_ts", "visible_ts"):
+        ts = pd.to_datetime(row.get(ts_col), utc=True, errors="coerce")
+        if pd.notna(ts) and abs((ts - candidate_latest_ts).total_seconds()) <= 900:
+            near_candidate_ts = True
+            break
+
+    try:
+        score = float(row.get("range_retest_score", 0.0) or 0.0)
+    except Exception:
+        score = 0.0
+
+    diagnostics_prove_fresh_trigger = (
+        bool(row.get("trigger_refresh_candidate", False))
+        and score >= 3.0
+        and str(row.get("trigger_refresh_reason", ""))
+        == "possible_fresh_range_retest_collapsed_to_old_canonical"
+        and pd.notna(candidate_latest_ts)
+    )
+
+    return bool(near_candidate_ts or diagnostics_prove_fresh_trigger)
+
+
+def _maybe_refresh_range_trigger_instance(
+    *,
+    wait_checked: pd.DataFrame,
+    candles_df: pd.DataFrame,
+    latest_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    """
+    RANGE_TOP_SHORT_V2 only.
+
+    Convert a diagnostics-proven fresh range retest collision into a new
+    setup instance before the execution-window guard runs. This does not
+    touch TDP, lifecycle architecture, overlap gate, closer, or TP/SL logic.
+    """
+    if wait_checked is None or wait_checked.empty:
+        return wait_checked
+
+    out = wait_checked.copy()
+    latest_ts = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+    if "trigger_refresh_applied" not in out.columns:
+        out["trigger_refresh_applied"] = False
+
+    for idx, row in out.iterrows():
+        if str(row.get("model", "")) != "RANGE_TOP_SHORT_V2":
+            continue
+        if not bool(row.get("trigger_refresh_candidate", False)):
+            continue
+
+        try:
+            score = float(row.get("range_retest_score", 0.0) or 0.0)
+        except Exception:
+            score = 0.0
+        if score < 3.0:
+            continue
+
+        candidate_latest_ts = pd.to_datetime(
+            row.get("candidate_latest_ts"),
+            utc=True,
+            errors="coerce",
+        )
+        if pd.isna(candidate_latest_ts):
+            continue
+
+        refreshed_wait_confirm_ts = candidate_latest_ts + pd.Timedelta(minutes=15)
+        if pd.isna(latest_ts) or latest_ts < refreshed_wait_confirm_ts:
+            out.at[idx, "trigger_refresh_reason"] = "refreshed_wait_not_confirmed_yet"
+            out.at[idx, "trigger_refresh_applied"] = False
+            continue
+
+        old_wait_confirm_ts = pd.to_datetime(
+            row.get("wait_confirm_ts"),
+            utc=True,
+            errors="coerce",
+        )
+        if pd.isna(old_wait_confirm_ts):
+            old_wait_confirm_ts = (
+                pd.to_datetime(row.get("setup_created_ts"), utc=True, errors="coerce")
+                + pd.Timedelta(minutes=15)
+            )
+        if pd.isna(old_wait_confirm_ts):
+            continue
+
+        old_expiry_ts = old_wait_confirm_ts + pd.Timedelta(minutes=60)
+        if candidate_latest_ts <= old_expiry_ts:
+            continue
+
+        if not _range_trigger_current_candle_has_fresh_risk_anchor(
+            row=row,
+            candles_df=candles_df,
+            candidate_latest_ts=candidate_latest_ts,
+        ):
+            out.at[idx, "trigger_refresh_reason"] = "risk_anchor_not_fresh"
+            out.at[idx, "trigger_refresh_applied"] = False
+            continue
+
+        side = str(row.get("side", "")).upper()
+        symbol = str(row.get("symbol", "")).upper()
+        if not symbol:
+            setup_id = str(row.get("setup_id", ""))
+            symbol = setup_id.split("|", 1)[0].upper() if "|" in setup_id else ""
+        if not symbol or not side:
+            continue
+
+        out.at[idx, "old_canonical_setup_key"] = str(row.get("canonical_setup_key", ""))
+        out.at[idx, "setup_created_ts"] = candidate_latest_ts
+        out.at[idx, "timestamp"] = candidate_latest_ts
+        out.at[idx, "canonical_setup_key"] = f"{symbol}|RANGE_TOP_SHORT_V2|{side}|{candidate_latest_ts}"
+        out.at[idx, "setup_id"] = f"{symbol}|{candidate_latest_ts}|RANGE_TOP_SHORT_V2|{side}"
+        out.at[idx, "wait_confirm_ts"] = refreshed_wait_confirm_ts
+        out.at[idx, "wait_context_source"] = "setup_created_ts_plus_1_candle"
+        out.at[idx, "trigger_refresh_applied"] = True
+        out.at[idx, "trigger_refresh_reason"] = "fresh_range_retest_new_instance"
+
+    return out
+
+def _add_range_trigger_refresh_diagnostics(
+    *,
+    df: pd.DataFrame,
+    candles_df: pd.DataFrame,
+    latest_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    """
+    Diagnostics only.
+
+    This must not mutate canonical_setup_key, setup_id, setup_created_ts,
+    timestamp, visible_ts, entry_anchor_ts, or execution timing. It only
+    annotates RANGE_TOP_SHORT_V2 rows that look like possible fresh retests
+    collapsed onto an older canonical identity.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    latest_ts = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+
+    defaults = {
+        "trigger_refresh_candidate": False,
+        "trigger_refresh_reason": "",
+        "old_canonical_setup_key": "",
+        "original_setup_created_ts": "",
+        "candidate_latest_ts": "",
+        "range_retest_score": 0.0,
+    }
+    for col, default in defaults.items():
+        if col not in out.columns:
+            out[col] = default
+
+    if candles_df is None or candles_df.empty or pd.isna(latest_ts):
+        return out
+    if "timestamp" not in candles_df.columns:
+        return out
+
+    c = candles_df.copy()
+    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True, errors="coerce")
+    c = c.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    if c.empty:
+        return out
+
+    hit = c.loc[c["timestamp"] == latest_ts]
+    if hit.empty:
+        hit = c.loc[c["timestamp"] <= latest_ts].tail(1)
+    if hit.empty:
+        return out
+
+    latest_idx = int(hit.index[-1])
+    latest_candle = hit.iloc[-1]
+    prior = c.iloc[max(0, latest_idx - 8):latest_idx]
+    if prior.empty:
+        return out
+
+    try:
+        high = float(latest_candle.get("high"))
+        low = float(latest_candle.get("low"))
+        open_ = float(latest_candle.get("open"))
+        close = float(latest_candle.get("close"))
+        candle_range = high - low
+        local_top = bool(high >= float(prior["high"].max()) * 0.9995)
+        upper_wick = high - max(open_, close)
+        rejection = bool(candle_range > 0 and (upper_wick >= candle_range * 0.15 or close < open_))
+    except Exception:
+        return out
+
+    for idx, row in out.iterrows():
+        if str(row.get("model", "")) != "RANGE_TOP_SHORT_V2":
+            continue
+        if str(row.get("side", "")).upper() != "SHORT":
+            continue
+
+        canonical_key = str(row.get("canonical_setup_key", "") or "")
+        original_setup_ts = _canonical_created_ts_for_diagnostics(canonical_key)
+        if pd.isna(original_setup_ts):
+            original_setup_ts = pd.to_datetime(
+                row.get("setup_created_ts", row.get("timestamp", pd.NaT)),
+                utc=True,
+                errors="coerce",
+            )
+
+        old_identity = pd.notna(original_setup_ts) and latest_ts > (original_setup_ts + pd.Timedelta(minutes=30))
+        entry = pd.to_numeric(pd.Series([row.get("entry")]), errors="coerce").iloc[0]
+        entry_in_candle = bool(pd.notna(entry) and low <= float(entry) <= high)
+
+        score = 0.0
+        if old_identity:
+            score += 1.0
+        if local_top:
+            score += 1.0
+        if rejection:
+            score += 1.0
+        if entry_in_candle:
+            score += 1.0
+
+        candidate = bool(old_identity and local_top and rejection)
+        reason = ""
+        if candidate:
+            reason = "possible_fresh_range_retest_collapsed_to_old_canonical"
+        elif old_identity:
+            reason = "old_range_identity_no_fresh_retest_proven"
+
+        out.at[idx, "trigger_refresh_candidate"] = candidate
+        out.at[idx, "trigger_refresh_reason"] = reason
+        out.at[idx, "old_canonical_setup_key"] = canonical_key
+        out.at[idx, "original_setup_created_ts"] = (
+            "" if pd.isna(original_setup_ts) else str(original_setup_ts)
+        )
+        out.at[idx, "candidate_latest_ts"] = (
+            "" if pd.isna(latest_ts) else str(latest_ts)
+        )
+        out.at[idx, "range_retest_score"] = float(score)
+
+    return out
+
+
 def model_freshness_filter(df: pd.DataFrame, latest_ts: pd.Timestamp) -> pd.DataFrame:
     if df.empty:
         return df
@@ -756,14 +1491,14 @@ def model_freshness_filter(df: pd.DataFrame, latest_ts: pd.Timestamp) -> pd.Data
         keep = False
         reason = ""
 
-        ALLOWED_EXTRA_BARS = 1
+        ALLOWED_EXTRA_BARS = 0
 
         if model == "RANGE_TOP_SHORT_V2":
-            keep = age_candles <= (1 + ALLOWED_EXTRA_BARS)
+            keep = age_candles <= 4
             reason = "range_fresh" if keep else "range_too_old"
 
         elif model == "TDP_REENTRY":
-            keep = age_candles <= (3 + ALLOWED_EXTRA_BARS)
+            keep = age_candles <= 16
             reason = "tdp_fresh" if keep else "tdp_too_old"
 
         else:
@@ -952,6 +1687,12 @@ def run_symbol_once(
                 f"setup_id={identity_row.get('setup_id', '')}"
             )
 
+        df_e = _add_range_trigger_refresh_diagnostics(
+            df=df_e,
+            candles_df=candles_df,
+            latest_ts=latest_ts,
+        )
+
         stable_visible = []
 
         cache_updated = False
@@ -1077,6 +1818,13 @@ def run_symbol_once(
         flow_row["first_seen_ts"] = visible_ts
         flow_row["age_candles_at_first_seen"] = 0
         flow_row["age_minutes_at_first_seen"] = 0.0
+        flow_row["trigger_refresh_candidate"] = bool(first_row.get("trigger_refresh_candidate", False))
+        flow_row["trigger_refresh_reason"] = str(first_row.get("trigger_refresh_reason", ""))
+        flow_row["old_canonical_setup_key"] = str(first_row.get("old_canonical_setup_key", ""))
+        flow_row["original_setup_created_ts"] = pd.to_datetime(first_row.get("original_setup_created_ts"), utc=True, errors="coerce")
+        flow_row["candidate_latest_ts"] = pd.to_datetime(first_row.get("candidate_latest_ts"), utc=True, errors="coerce")
+        flow_row["range_retest_score"] = float(first_row.get("range_retest_score", 0.0) or 0.0)
+        flow_row["trigger_refresh_applied"] = bool(first_row.get("trigger_refresh_applied", False))
 
     flow_row["phase"] = _derive_phase(df_e, ctx)
     flow_row["raw_entries_count"] = int(0 if df_e is None else len(df_e))
@@ -1110,8 +1858,7 @@ def run_symbol_once(
 
     # Wait confirmation is an EARLY STRUCTURAL VALIDATION.
     # It must evaluate setup_created_ts + one candle, not the late live
-    # visible/entry-anchor/cycle timestamp. The live execution clock is
-    # restored after wait accepts.
+    # visible/entry-anchor/cycle timestamp.
     df_wait["cycle_ts"] = pd.to_datetime(cycle_ts, utc=True, errors="coerce")
     df_wait["pre_wait_live_execution_ts"] = pd.to_datetime(
         df_wait["entry_anchor_ts"], utc=True, errors="coerce"
@@ -1134,26 +1881,49 @@ def run_symbol_once(
             if "wait_context_source" not in wait_checked.columns:
                 wait_checked["wait_context_source"] = "setup_created_ts_plus_1_candle"
 
-            live_exec_ts = pd.to_datetime(
-                wait_checked.get("pre_wait_live_execution_ts", wait_checked.get("entry_anchor_ts", pd.NaT)),
-                utc=True,
-                errors="coerce",
+            wait_checked = _maybe_refresh_range_trigger_instance(
+                wait_checked=wait_checked,
+                candles_df=candles_df,
+                latest_ts=latest_ts,
             )
-            fallback_exec_ts = pd.to_datetime(
-                wait_checked.get("entry_anchor_ts", wait_checked.get("pipeline_visible_ts", latest_ts)),
-                utc=True,
-                errors="coerce",
-            )
-            live_exec_ts = live_exec_ts.fillna(fallback_exec_ts)
 
-            # Preserve live/parity execution clock while keeping the wait decision
-            # anchored to setup_created_ts + one candle.
-            wait_checked["signal_ts"] = live_exec_ts
-            wait_checked["timestamp"] = live_exec_ts
+            wait_checked = _apply_execution_window_guard(
+                wait_checked=wait_checked,
+                latest_ts=latest_ts,
+                symbol=symbol,
+                flow_log_csv=flow_log_csv,
+                flow_row=flow_row,
+            )
+
+            if wait_checked.empty:
+                entries_after_wait = []
+                after_wait = 0
+                _write_state(state_path, latest_ts)
+                print(f"[POST_DROP][{symbol}] stage=STALE_EXECUTION_WINDOW latest_ts={latest_ts}")
+                flow_row["after_wait_count"] = 0
+                flow_row["after_freshness_count"] = 0
+                flow_row["after_idempotency_count"] = 0
+                flow_row["after_stale_count"] = 0
+                flow_row["after_per_cycle_guard_count"] = 0
+                flow_row["emitted_count"] = 0
+                flow_row["notes"] = "entry_window_expired"
+                flow_row["death_stage"] = "stale"
+                flow_row["death_reason"] = "stale_execution_window"
+                flow_row["execution_ts_source"] = "wait_confirm_ts"
+                flow_row["entry_timing_valid"] = False
+                _append_flow_row(flow_log_csv, flow_row)
+                return 0
+
+            after_wait = len(wait_checked)
 
             diag = wait_checked.iloc[0]
             flow_row["wait_confirm_ts"] = pd.to_datetime(diag.get("wait_confirm_ts"), utc=True, errors="coerce")
             flow_row["wait_context_source"] = str(diag.get("wait_context_source", "setup_created_ts_plus_1_candle"))
+            flow_row["intended_entry_ts"] = pd.to_datetime(diag.get("intended_entry_ts"), utc=True, errors="coerce")
+            flow_row["entry_window_expires_ts"] = pd.to_datetime(diag.get("entry_window_expires_ts"), utc=True, errors="coerce")
+            flow_row["entry_delay_minutes"] = float(diag.get("entry_delay_minutes", 0.0) or 0.0)
+            flow_row["entry_timing_valid"] = bool(diag.get("entry_timing_valid", False))
+            flow_row["execution_ts_source"] = str(diag.get("execution_ts_source", "wait_confirm_ts"))
             print(
                 f"[WAIT_CONTEXT_ACCEPTED][{symbol}] "
                 f"canonical={diag.get('canonical_setup_key', '')} "
@@ -1192,71 +1962,6 @@ def run_symbol_once(
             _append_flow_row(flow_log_csv, flow_row)
             return 0
 
-        # LIVE SAFETY: wait-confirmed execution cannot be before live activation.
-        # Prevents historical setup from being "confirmed" using old candles.
-        if entries:
-            wait_checked = pd.DataFrame(entries)
-
-            wait_checked["timestamp"] = pd.to_datetime(
-                wait_checked["timestamp"], utc=True, errors="coerce"
-            )
-
-            if "entry_anchor_ts" in wait_checked.columns:
-                wait_checked["entry_anchor_ts"] = pd.to_datetime(
-                    wait_checked["entry_anchor_ts"], utc=True, errors="coerce"
-                )
-            else:
-                wait_checked["entry_anchor_ts"] = pd.NaT
-
-            if "visible_ts" in wait_checked.columns:
-                wait_checked["visible_ts"] = pd.to_datetime(
-                    wait_checked["visible_ts"], utc=True, errors="coerce"
-                )
-            else:
-                wait_checked["visible_ts"] = pd.NaT
-
-            if "pipeline_visible_ts" in wait_checked.columns:
-                wait_checked["pipeline_visible_ts"] = pd.to_datetime(
-                    wait_checked["pipeline_visible_ts"], utc=True, errors="coerce"
-                )
-            else:
-                wait_checked["pipeline_visible_ts"] = pd.NaT
-
-            anchor = wait_checked["entry_anchor_ts"].copy()
-            m = anchor.isna()
-            anchor.loc[m] = wait_checked.loc[m, "visible_ts"]
-            m = anchor.isna()
-            anchor.loc[m] = wait_checked.loc[m, "pipeline_visible_ts"]
-
-            wait_checked["live_activation_ts"] = anchor
-
-            before_live_exec = len(wait_checked)
-            wait_checked = wait_checked[
-                wait_checked["live_activation_ts"].isna()
-                | (
-                    wait_checked["timestamp"]
-                    >= wait_checked["live_activation_ts"]
-                )
-            ].copy()
-            after_live_exec = len(wait_checked)
-
-            if after_live_exec < before_live_exec:
-                print(
-                    f"[DROP][{symbol}] stage=WAIT_LIVE_EXECUTION_TIME "
-                    f"before={before_live_exec} after={after_live_exec}"
-                )
-
-            entries = wait_checked.drop(columns=["live_activation_ts"]).to_dict("records")
-
-            if not entries:
-                _write_state(state_path, latest_ts)
-                print(f"[POST_DROP][{symbol}] stage=WAIT_LIVE_EXECUTION_TIME latest_ts={latest_ts}")
-                flow_row["after_wait_count"] = 0
-                flow_row["notes"] = "died_in_wait_live_execution_time"
-                flow_row["death_stage"] = "wait_live_execution_time"
-                flow_row["death_reason"] = "execution_before_live_activation"
-                _append_flow_row(flow_log_csv, flow_row)
-                return 0
 
     wait_df = pd.DataFrame(entries)
     flow_row["after_wait_count"] = int(len(wait_df))
@@ -1346,6 +2051,30 @@ def run_symbol_once(
         flow_row["death_reason"] = "select_newest_live_candidate"
         _append_flow_row(flow_log_csv, flow_row)
         return 0
+
+    out_df, position_gate_skipped = _filter_position_overlap_candidates(
+        out_df=out_df,
+        symbol=symbol,
+        position_state_csv=position_state_csv,
+        flow_log_csv=flow_log_csv,
+        flow_row=flow_row,
+    )
+    flow_row["after_per_cycle_guard_count"] = int(len(out_df))
+    flow_row["model_summary_after_per_cycle_guard"] = _series_summary(out_df, "model")
+    if out_df.empty:
+        _write_state(state_path, latest_ts)
+        print(f"[POST_DROP][{symbol}] stage=POSITION_GATE latest_ts={latest_ts}")
+        flow_row["skipped_open_position"] = True
+        flow_row["notes"] = "blocked_by_open_position_at_intended_open_ts"
+        flow_row["death_stage"] = "position_gate"
+        flow_row["death_reason"] = "open_position_exists_at_intended_open_ts"
+        flow_row["emitted_count"] = 0
+        _append_flow_row(flow_log_csv, flow_row)
+        return 0
+
+    if position_gate_skipped > 0:
+        flow_row["notes"] = f"position_gate_skipped={int(position_gate_skipped)}"
+
     # Keep flow_log aligned with the exact final emitted row.
     if out_df is not None and not out_df.empty:
         final_row = out_df.iloc[0]
@@ -1358,6 +2087,13 @@ def run_symbol_once(
         flow_row["visible_ts"] = pd.to_datetime(final_row.get("visible_ts"), utc=True, errors="coerce")
         flow_row["entry_anchor_ts"] = pd.to_datetime(final_row.get("entry_anchor_ts"), utc=True, errors="coerce")
         flow_row["first_seen_ts"] = flow_row["visible_ts"]
+        flow_row["trigger_refresh_candidate"] = bool(final_row.get("trigger_refresh_candidate", False))
+        flow_row["trigger_refresh_reason"] = str(final_row.get("trigger_refresh_reason", ""))
+        flow_row["old_canonical_setup_key"] = str(final_row.get("old_canonical_setup_key", ""))
+        flow_row["original_setup_created_ts"] = pd.to_datetime(final_row.get("original_setup_created_ts"), utc=True, errors="coerce")
+        flow_row["candidate_latest_ts"] = pd.to_datetime(final_row.get("candidate_latest_ts"), utc=True, errors="coerce")
+        flow_row["range_retest_score"] = float(final_row.get("range_retest_score", 0.0) or 0.0)
+        flow_row["trigger_refresh_applied"] = bool(final_row.get("trigger_refresh_applied", False))
 
     written = _emit_observation_rows(
         out_csv=out_csv,
@@ -1402,6 +2138,8 @@ def run_symbol_once(
             canonical_setup_key=first_canonical_key,
             setup_created_ts=first.get("setup_created_ts", pd.NaT),
             signal_ts=first.get("signal_ts", pd.NaT),
+            wait_confirm_ts=first.get("wait_confirm_ts", pd.NaT),
+            wait_context_source=first.get("wait_context_source", ""),
         )
         _append_terminal_lifecycle_row(
             terminal_lifecycle_registry_csv,
