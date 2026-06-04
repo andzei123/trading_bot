@@ -101,6 +101,571 @@ FLOW_LOG_COLUMNS = [
     "death_reason",
 ]
 
+# -----------------------------------------------------------------------------
+# TELEMETRY ONLY: raw candidate lifecycle / pressure-window diagnostics.
+# These CSVs are append/rebuild observability artifacts. They are never read by
+# trading gates and must not influence ordering, filtering, idempotency, stale
+# handling, lifecycle decisions, position state, or emitted trade rows.
+# -----------------------------------------------------------------------------
+RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS = [
+    "cycle_ts",
+    "symbol",
+    "latest_ts",
+    "candidate_ts",
+    "model",
+    "side",
+    "setup_id",
+    "canonical_setup_key",
+    "setup_created_ts",
+    "timestamp",
+    "visible_ts",
+    "entry_anchor_ts",
+    "wait_confirm_ts",
+    "intended_entry_ts",
+    "entry",
+    "sl",
+    "tp",
+    "rr",
+    "phase",
+    "range_retest_score",
+    "death_stage",
+    "death_reason",
+    "passed_wait",
+    "passed_stale",
+    "passed_idempotency",
+    "passed_position_gate",
+    "emitted",
+    "pressure_raw_count",
+    "pressure_group_count",
+    "inside_pressure_window",
+    "pressure_window_id",
+    "pressure_window_age_bars",
+    "pressure_window_duration_bars",
+    "pressure_window_peak_raw",
+]
+
+
+
+SNIPER_CANDIDATE_DIAG_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "setup_id",
+    "canonical_setup_key",
+    "candidate_ts",
+    "visible_ts",
+    "wait_confirm_ts",
+    "death_stage",
+    "death_reason",
+    "entry",
+    "sl",
+    "tp",
+    "raw_candidate_count",
+    "prev_raw_candidate_count",
+    "raw_count_delta",
+    "cluster_group_count",
+    "groups_gt1",
+    "groups_gt2",
+    "groups_gt3",
+    "pressure_window_id",
+    "pressure_window_age",
+    "pressure_window_candidate_count",
+    "candidate_persistence_bars",
+    "is_candidate_expansion",
+    "is_candidate_flat",
+    "is_candidate_contraction",
+    "is_emitted",
+]
+
+SNIPER_CANDIDATE_SUMMARY_COLUMNS = [
+    "symbol",
+    "model",
+    "death_stage",
+    "death_reason",
+    "candidate_expansion_state",
+    "candidate_count",
+    "emitted_count",
+]
+
+SNIPER_PREV_RAW_COUNT_BY_SYMBOL: Dict[str, int] = {}
+SNIPER_PERSISTENCE_BY_KEY: Dict[str, int] = {}
+
+PRESSURE_WINDOW_SUMMARY_COLUMNS = [
+    "symbol",
+    "window_id",
+    "window_start",
+    "window_end",
+    "duration_bars",
+    "duration_minutes",
+    "max_raw_candidate_count",
+    "sum_raw_candidate_count",
+    "avg_raw_candidate_count",
+    "cluster_group_count_max",
+    "groups_gt1_any",
+    "groups_gt2_any",
+    "groups_gt3_any",
+    "emitted_count_inside_window",
+    "raw_candidate_count_inside_window",
+    "death_reason_counts_inside_window",
+    "first_candidate_ts",
+    "last_candidate_ts",
+    # Hindsight diagnostics: these locate candle events after the pressure
+    # window and are never used for trading decisions.
+    "hindsight_window_high",
+    "hindsight_window_high_ts",
+    "hindsight_first_lower_high_after_window_high_ts",
+    "hindsight_first_close_below_prev_low_after_window_high_ts",
+]
+
+
+def _diag_path(path_like) -> Optional[Path]:
+    if path_like is None:
+        return None
+    path_s = str(path_like).strip()
+    if not path_s:
+        return None
+    return Path(path_s)
+
+
+def _diag_row_key(row: pd.Series) -> str:
+    canonical = str(row.get("canonical_setup_key", "") or "")
+    if canonical:
+        return canonical
+    setup_id = str(row.get("setup_id", "") or "")
+    if setup_id:
+        return setup_id
+    return "|".join([
+        str(row.get("symbol", "") or ""),
+        str(row.get("model", "") or ""),
+        str(row.get("side", "") or ""),
+        str(pd.to_datetime(row.get("timestamp", pd.NaT), utc=True, errors="coerce")),
+    ])
+
+
+def _diag_key_set(df: Optional[pd.DataFrame]) -> Set[str]:
+    if df is None or df.empty:
+        return set()
+    keys: Set[str] = set()
+    for _, row in df.iterrows():
+        keys.add(_diag_row_key(row))
+        old_key = str(row.get("old_canonical_setup_key", "") or "")
+        if old_key:
+            keys.add(old_key)
+        setup_id = str(row.get("setup_id", "") or "")
+        if setup_id:
+            keys.add(setup_id)
+    return keys
+
+
+def _make_raw_candidate_diag_rows(
+    *,
+    candidates_df: Optional[pd.DataFrame],
+    cycle_ts: pd.Timestamp,
+    symbol: str,
+    latest_ts: pd.Timestamp,
+) -> List[Dict[str, object]]:
+    """Build immutable telemetry snapshots for raw candidates.
+
+    This function copies candidate fields only. It must never mutate the
+    dataframe that continues through trading gates.
+    """
+    if candidates_df is None or candidates_df.empty:
+        return []
+
+    rows: List[Dict[str, object]] = []
+    raw_count = int(len(candidates_df))
+    for _, r in candidates_df.iterrows():
+        candidate_ts = pd.to_datetime(r.get("timestamp", pd.NaT), utc=True, errors="coerce")
+        row = {
+            "cycle_ts": pd.to_datetime(cycle_ts, utc=True, errors="coerce"),
+            "symbol": str(r.get("symbol", symbol) or symbol).upper(),
+            "latest_ts": pd.to_datetime(latest_ts, utc=True, errors="coerce"),
+            "candidate_ts": candidate_ts,
+            "model": str(r.get("model", "") or ""),
+            "side": str(r.get("side", "") or "").upper(),
+            "setup_id": str(r.get("setup_id", "") or ""),
+            "canonical_setup_key": str(r.get("canonical_setup_key", "") or ""),
+            "setup_created_ts": pd.to_datetime(r.get("setup_created_ts", candidate_ts), utc=True, errors="coerce"),
+            "timestamp": candidate_ts,
+            "visible_ts": pd.to_datetime(r.get("visible_ts", pd.NaT), utc=True, errors="coerce"),
+            "entry_anchor_ts": pd.to_datetime(r.get("entry_anchor_ts", pd.NaT), utc=True, errors="coerce"),
+            "wait_confirm_ts": pd.to_datetime(r.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
+            "intended_entry_ts": pd.to_datetime(r.get("intended_entry_ts", pd.NaT), utc=True, errors="coerce"),
+            "entry": r.get("entry", ""),
+            "sl": r.get("sl", ""),
+            "tp": r.get("tp", ""),
+            "rr": r.get("rr", ""),
+            "phase": str(r.get("phase", "") or ""),
+            "range_retest_score": r.get("range_retest_score", ""),
+            "death_stage": "unknown",
+            "death_reason": "",
+            "passed_wait": False,
+            "passed_stale": False,
+            "passed_idempotency": False,
+            "passed_position_gate": False,
+            "emitted": False,
+            # Pressure-window fields are derived later from this diagnostic CSV.
+            # If upstream candidate_pressure internals are unavailable here, keep
+            # group/window fields empty rather than inventing values.
+            "pressure_raw_count": raw_count,
+            "pressure_group_count": "",
+            "inside_pressure_window": bool(raw_count > 0),
+            "pressure_window_id": "",
+            "pressure_window_age_bars": "",
+            "pressure_window_duration_bars": "",
+            "pressure_window_peak_raw": raw_count,
+        }
+        rows.append(row)
+    return rows
+
+
+def _mark_raw_candidate_diag_rows(
+    rows: List[Dict[str, object]],
+    *,
+    wait_df: Optional[pd.DataFrame] = None,
+    idempotency_df: Optional[pd.DataFrame] = None,
+    stale_df: Optional[pd.DataFrame] = None,
+    position_df: Optional[pd.DataFrame] = None,
+    emitted_df: Optional[pd.DataFrame] = None,
+    death_stage: str,
+    death_reason: str,
+) -> List[Dict[str, object]]:
+    """Annotate telemetry rows using post-gate copies only.
+
+    The returned list is written to diagnostics only and is not consumed by any
+    decision path.
+    """
+    wait_keys = _diag_key_set(wait_df)
+    idem_keys = _diag_key_set(idempotency_df)
+    stale_keys = _diag_key_set(stale_df)
+    pos_keys = _diag_key_set(position_df)
+    emit_keys = _diag_key_set(emitted_df)
+
+    out = []
+    for row in rows:
+        k = str(row.get("canonical_setup_key") or row.get("setup_id") or "")
+        r = dict(row)
+        r["passed_wait"] = bool(k and k in wait_keys)
+        r["passed_idempotency"] = bool(k and k in idem_keys)
+        r["passed_stale"] = bool(k and k in stale_keys)
+        r["passed_position_gate"] = bool(k and k in pos_keys)
+        r["emitted"] = bool(k and k in emit_keys)
+        if r["emitted"]:
+            r["death_stage"] = "emitted"
+            r["death_reason"] = "passed_all_filters"
+        elif r["passed_position_gate"] and death_stage == "post_guard":
+            r["death_stage"] = "post_guard"
+            r["death_reason"] = death_reason
+        else:
+            r["death_stage"] = death_stage
+            r["death_reason"] = death_reason
+        out.append(r)
+    return out
+
+
+def _append_raw_candidate_lifecycle_diag(path_like, rows: List[Dict[str, object]]) -> None:
+    path = _diag_path(path_like)
+    if path is None or not rows:
+        return
+    _ensure_parent(path)
+    out = pd.DataFrame(rows)
+    for col in RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+
+def _sniper_candidate_key(row: pd.Series) -> str:
+    canonical = str(row.get("canonical_setup_key", "") or "")
+    if canonical:
+        return canonical
+    setup_id = str(row.get("setup_id", "") or "")
+    if setup_id:
+        return setup_id
+    return "|".join([
+        str(row.get("symbol", "") or "").upper(),
+        str(row.get("candidate_ts", row.get("timestamp", "")) or ""),
+    ])
+
+
+def _make_sniper_candidate_diag_rows(
+    *,
+    marked_rows: List[Dict[str, object]],
+    sniper_diag_csv: str,
+) -> List[Dict[str, object]]:
+    """Build RANGE_TOP_SHORT_V2 SHORT sniper telemetry rows only.
+
+    This function consumes already-created diagnostic copies. It does not mutate
+    candidate dataframes and none of its outputs are read by trading gates.
+    """
+    if not marked_rows:
+        return []
+
+    range_short_rows = [
+        dict(r) for r in marked_rows
+        if str(r.get("model", "")) == "RANGE_TOP_SHORT_V2"
+        and str(r.get("side", "")).upper() == "SHORT"
+    ]
+    if not range_short_rows:
+        return []
+
+    symbol = str(range_short_rows[0].get("symbol", "") or "").upper()
+    prev_raw_count = int(SNIPER_PREV_RAW_COUNT_BY_SYMBOL.get(symbol, 0))
+
+    raw_candidate_count = int(range_short_rows[0].get("pressure_raw_count", len(marked_rows)) or len(marked_rows))
+    raw_count_delta = int(raw_candidate_count - prev_raw_count)
+    is_expansion = bool(raw_candidate_count > prev_raw_count)
+    is_flat = bool(raw_candidate_count == prev_raw_count)
+    is_contraction = bool(raw_candidate_count < prev_raw_count)
+
+    out: List[Dict[str, object]] = []
+    for r in range_short_rows:
+        cluster_group_count = pd.to_numeric(pd.Series([r.get("pressure_group_count", "")]), errors="coerce").iloc[0]
+        if pd.isna(cluster_group_count):
+            cluster_group_value: object = ""
+            groups_gt1: object = ""
+            groups_gt2: object = ""
+            groups_gt3: object = ""
+        else:
+            cluster_group_value = int(cluster_group_count)
+            groups_gt1 = bool(cluster_group_count > 1)
+            groups_gt2 = bool(cluster_group_count > 2)
+            groups_gt3 = bool(cluster_group_count > 3)
+
+        k = _sniper_candidate_key(pd.Series(r))
+        persistence_bars = int(SNIPER_PERSISTENCE_BY_KEY.get(k, 0) + 1)
+        out.append({
+            "timestamp": pd.to_datetime(r.get("latest_ts", r.get("cycle_ts", pd.NaT)), utc=True, errors="coerce"),
+            "symbol": str(r.get("symbol", symbol) or symbol).upper(),
+            "setup_id": str(r.get("setup_id", "") or ""),
+            "canonical_setup_key": str(r.get("canonical_setup_key", "") or ""),
+            "candidate_ts": pd.to_datetime(r.get("candidate_ts", r.get("timestamp", pd.NaT)), utc=True, errors="coerce"),
+            "visible_ts": pd.to_datetime(r.get("visible_ts", pd.NaT), utc=True, errors="coerce"),
+            "wait_confirm_ts": pd.to_datetime(r.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
+            "death_stage": str(r.get("death_stage", "") or ""),
+            "death_reason": str(r.get("death_reason", "") or ""),
+            "entry": r.get("entry", ""),
+            "sl": r.get("sl", ""),
+            "tp": r.get("tp", ""),
+            "raw_candidate_count": raw_candidate_count,
+            "prev_raw_candidate_count": prev_raw_count,
+            "raw_count_delta": raw_count_delta,
+            "cluster_group_count": cluster_group_value,
+            "groups_gt1": groups_gt1,
+            "groups_gt2": groups_gt2,
+            "groups_gt3": groups_gt3,
+            "pressure_window_id": str(r.get("pressure_window_id", "") or ""),
+            "pressure_window_age": r.get("pressure_window_age_bars", ""),
+            "pressure_window_candidate_count": r.get("pressure_raw_count", raw_candidate_count),
+            "candidate_persistence_bars": persistence_bars,
+            "is_candidate_expansion": is_expansion,
+            "is_candidate_flat": is_flat,
+            "is_candidate_contraction": is_contraction,
+            "is_emitted": bool(r.get("emitted", False)),
+        })
+        if k:
+            SNIPER_PERSISTENCE_BY_KEY[k] = persistence_bars
+    SNIPER_PREV_RAW_COUNT_BY_SYMBOL[symbol] = raw_candidate_count
+    return out
+
+
+def _append_sniper_candidate_diag(path_like, rows: List[Dict[str, object]]) -> None:
+    path = _diag_path(path_like)
+    if path is None or not rows:
+        return
+    _ensure_parent(path)
+    out = pd.DataFrame(rows)
+    for col in SNIPER_CANDIDATE_DIAG_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[SNIPER_CANDIDATE_DIAG_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+def _append_sniper_candidate_outputs(
+    *,
+    sniper_candidate_diag_csv: str,
+    sniper_candidate_summary_csv: str,
+    marked_rows: List[Dict[str, object]],
+) -> None:
+    rows = _make_sniper_candidate_diag_rows(
+        marked_rows=marked_rows,
+        sniper_diag_csv=sniper_candidate_diag_csv,
+    )
+    _append_sniper_candidate_diag(sniper_candidate_diag_csv, rows)
+
+
+def _ensure_sniper_candidate_outputs(sniper_candidate_diag_csv: str, sniper_candidate_summary_csv: str) -> None:
+    diag_path = _diag_path(sniper_candidate_diag_csv)
+    if diag_path is not None and (not diag_path.exists() or diag_path.stat().st_size == 0):
+        _ensure_parent(diag_path)
+        pd.DataFrame(columns=SNIPER_CANDIDATE_DIAG_COLUMNS).to_csv(diag_path, index=False)
+    summary_path = _diag_path(sniper_candidate_summary_csv)
+    if summary_path is not None and (not summary_path.exists() or summary_path.stat().st_size == 0):
+        _ensure_parent(summary_path)
+        pd.DataFrame(columns=SNIPER_CANDIDATE_SUMMARY_COLUMNS).to_csv(summary_path, index=False)
+
+def _range_short_hindsight_fields(candles_df: Optional[pd.DataFrame], start_ts, end_ts) -> Dict[str, object]:
+    # Hindsight-only candle-location telemetry. This function must not be called
+    # from any trading decision path.
+    empty = {
+        "hindsight_window_high": "",
+        "hindsight_window_high_ts": "",
+        "hindsight_first_lower_high_after_window_high_ts": "",
+        "hindsight_first_close_below_prev_low_after_window_high_ts": "",
+    }
+    if candles_df is None or candles_df.empty or "timestamp" not in candles_df.columns:
+        return empty
+    c = candles_df.copy()
+    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True, errors="coerce")
+    c = c.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    if c.empty or "high" not in c.columns or "low" not in c.columns or "close" not in c.columns:
+        return empty
+    start_ts = pd.to_datetime(start_ts, utc=True, errors="coerce")
+    end_ts = pd.to_datetime(end_ts, utc=True, errors="coerce")
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return empty
+    inside = c[(c["timestamp"] >= start_ts) & (c["timestamp"] <= end_ts)].copy()
+    if inside.empty:
+        return empty
+    high_idx = inside["high"].astype(float).idxmax()
+    window_high = float(c.loc[high_idx, "high"])
+    window_high_ts = c.loc[high_idx, "timestamp"]
+    after = c[c["timestamp"] > window_high_ts].copy()
+    lower_high_ts = pd.NaT
+    close_below_prev_low_ts = pd.NaT
+    prev_low = None
+    for _, r in after.iterrows():
+        if pd.isna(lower_high_ts) and float(r["high"]) < window_high:
+            lower_high_ts = r["timestamp"]
+        if prev_low is not None and pd.isna(close_below_prev_low_ts) and float(r["close"]) < float(prev_low):
+            close_below_prev_low_ts = r["timestamp"]
+        prev_low = r["low"]
+        if pd.notna(lower_high_ts) and pd.notna(close_below_prev_low_ts):
+            break
+    return {
+        "hindsight_window_high": window_high,
+        "hindsight_window_high_ts": window_high_ts,
+        "hindsight_first_lower_high_after_window_high_ts": lower_high_ts,
+        "hindsight_first_close_below_prev_low_after_window_high_ts": close_below_prev_low_ts,
+    }
+
+
+def _rebuild_pressure_window_summary(
+    raw_diag_csv,
+    summary_csv,
+    candles_df: Optional[pd.DataFrame] = None,
+    candles_symbol: str = "",
+) -> None:
+    """Rebuild summary from diagnostic rows only.
+
+    This output is telemetry-only. Rebuilding it never touches live state,
+    emitted rows, lifecycle registries, or filters.
+    """
+    raw_path = _diag_path(raw_diag_csv)
+    summary_path = _diag_path(summary_csv)
+    if raw_path is None or summary_path is None or not raw_path.exists() or raw_path.stat().st_size == 0:
+        return
+    try:
+        df = pd.read_csv(raw_path)
+    except Exception:
+        return
+    if df.empty or "symbol" not in df.columns or "latest_ts" not in df.columns:
+        return
+    df = df.copy()
+    df["latest_ts"] = pd.to_datetime(df["latest_ts"], utc=True, errors="coerce")
+    df["candidate_ts"] = pd.to_datetime(df.get("candidate_ts"), utc=True, errors="coerce")
+    df = df.dropna(subset=["latest_ts"])
+    if df.empty:
+        return
+
+    rows = []
+    for sym, sdf in df.groupby(df["symbol"].astype(str).str.upper()):
+        per_cycle = (
+            sdf.groupby("latest_ts", dropna=True)
+            .agg(
+                raw_candidate_count=("canonical_setup_key", "size"),
+                emitted_count=("emitted", lambda x: int(pd.Series(x).astype(str).str.lower().isin(["true", "1"]).sum())),
+                cluster_group_count=("pressure_group_count", lambda x: pd.to_numeric(x, errors="coerce").max()),
+            )
+            .reset_index()
+            .sort_values("latest_ts")
+        )
+        if per_cycle.empty:
+            continue
+        window_no = 0
+        current = []
+        prev_ts = pd.NaT
+        for _, cyc in per_cycle.iterrows():
+            ts = cyc["latest_ts"]
+            if current and pd.notna(prev_ts) and (ts - prev_ts) > pd.Timedelta(minutes=16):
+                window_no += 1
+                rows.append((sym, window_no, list(current)))
+                current = []
+            current.append(cyc)
+            prev_ts = ts
+        if current:
+            window_no += 1
+            rows.append((sym, window_no, list(current)))
+
+    out_rows = []
+    for sym, window_no, cycles in rows:
+        cyc_df = pd.DataFrame(cycles)
+        start = cyc_df["latest_ts"].min()
+        end = cyc_df["latest_ts"].max()
+        window_id = f"{sym}|{start.isoformat()}"
+        mask = (df["symbol"].astype(str).str.upper() == sym) & (df["latest_ts"] >= start) & (df["latest_ts"] <= end)
+        inside = df.loc[mask].copy()
+        raw_counts = pd.to_numeric(cyc_df["raw_candidate_count"], errors="coerce").fillna(0)
+        group_counts = pd.to_numeric(cyc_df.get("cluster_group_count"), errors="coerce")
+        death_counts = inside.get("death_reason", pd.Series(dtype=object)).fillna("").astype(str).value_counts().to_dict()
+        duration_bars = int(len(cyc_df))
+        duration_minutes = int(max(0, duration_bars - 1) * 15)
+        h = {}
+        try:
+            range_short = inside[(inside.get("model", "").astype(str) == "RANGE_TOP_SHORT_V2") & (inside.get("side", "").astype(str).str.upper() == "SHORT")]
+        except Exception:
+            range_short = pd.DataFrame()
+        if not range_short.empty and str(candles_symbol).upper() == sym:
+            h = _range_short_hindsight_fields(candles_df, start, end)
+        else:
+            h = _range_short_hindsight_fields(None, start, end)
+        out_rows.append({
+            "symbol": sym,
+            "window_id": window_id,
+            "window_start": start,
+            "window_end": end,
+            "duration_bars": duration_bars,
+            "duration_minutes": duration_minutes,
+            "max_raw_candidate_count": int(raw_counts.max()) if len(raw_counts) else 0,
+            "sum_raw_candidate_count": int(raw_counts.sum()) if len(raw_counts) else 0,
+            "avg_raw_candidate_count": float(raw_counts.mean()) if len(raw_counts) else 0.0,
+            "cluster_group_count_max": "" if group_counts.dropna().empty else int(group_counts.max()),
+            "groups_gt1_any": "" if group_counts.dropna().empty else bool((group_counts > 1).any()),
+            "groups_gt2_any": "" if group_counts.dropna().empty else bool((group_counts > 2).any()),
+            "groups_gt3_any": "" if group_counts.dropna().empty else bool((group_counts > 3).any()),
+            "emitted_count_inside_window": int(inside.get("emitted", pd.Series(dtype=object)).astype(str).str.lower().isin(["true", "1"]).sum()),
+            "raw_candidate_count_inside_window": int(len(inside)),
+            "death_reason_counts_inside_window": json.dumps(death_counts, sort_keys=True),
+            "first_candidate_ts": inside["candidate_ts"].min() if "candidate_ts" in inside.columns else pd.NaT,
+            "last_candidate_ts": inside["candidate_ts"].max() if "candidate_ts" in inside.columns else pd.NaT,
+            **h,
+        })
+    _ensure_parent(summary_path)
+    out = pd.DataFrame(out_rows)
+    for col in PRESSURE_WINDOW_SUMMARY_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out[PRESSURE_WINDOW_SUMMARY_COLUMNS].to_csv(summary_path, index=False)
+
+
 
 
 VISIBLE_TS_PATH = Path("backtest/journal/visible_ts_cache.csv")
@@ -1545,6 +2110,10 @@ def run_symbol_once(
     impulse_size_atr: float,
     tdp_dev_lookback: int,
     tts_retest_lookback: int,
+    raw_candidate_diag_csv: str = "",
+    pressure_window_summary_csv: str = "",
+    sniper_candidate_diag_csv: str = "",
+    sniper_candidate_summary_csv: str = "",
 ) -> int:
     candles_df = load_bybit_latest(category, symbol, interval, candles_n)
     fetch_status = LAST_BYBIT_FETCH_STATUS.get(str(symbol).upper(), FETCH_STATUS_EMPTY)
@@ -1589,7 +2158,17 @@ def run_symbol_once(
         debug_candles_dir / f"{symbol}_closed_live_candles.csv",
         index=False,
     )
+    _ensure_sniper_candidate_outputs(sniper_candidate_diag_csv, sniper_candidate_summary_csv)
     flow_row = _make_flow_row(cycle_ts=cycle_ts, symbol=symbol, latest_ts=latest_ts)
+    raw_candidate_diag_rows: List[Dict[str, object]] = []
+
+    def _append_cycle_candidate_diags(marked_rows: List[Dict[str, object]]) -> None:
+        _append_raw_candidate_lifecycle_diag(raw_candidate_diag_csv, marked_rows)
+        _append_sniper_candidate_outputs(
+            sniper_candidate_diag_csv=sniper_candidate_diag_csv,
+            sniper_candidate_summary_csv=sniper_candidate_summary_csv,
+            marked_rows=marked_rows,
+        )
     if debug:
         _time_alignment_audit(
             symbol=symbol,
@@ -1830,6 +2409,12 @@ def run_symbol_once(
     flow_row["raw_entries_count"] = int(0 if df_e is None else len(df_e))
     flow_row["model_summary_raw"] = _series_summary(df_e, "model")
     flow_row["sub_label_summary_raw"] = _series_summary(df_e, "ctx_sub_label")
+    raw_candidate_diag_rows = _make_raw_candidate_diag_rows(
+        candidates_df=df_e,
+        cycle_ts=cycle_ts,
+        symbol=symbol,
+        latest_ts=latest_ts,
+    )
     if debug:
         _time_alignment_audit(
             symbol=symbol,
@@ -1912,6 +2497,15 @@ def run_symbol_once(
                 flow_row["execution_ts_source"] = "wait_confirm_ts"
                 flow_row["entry_timing_valid"] = False
                 _append_flow_row(flow_log_csv, flow_row)
+                _append_cycle_candidate_diags(
+                    _mark_raw_candidate_diag_rows(
+                        raw_candidate_diag_rows,
+                        wait_df=pd.DataFrame(),
+                        death_stage="stale",
+                        death_reason="stale_execution_window",
+                    ),
+                )
+                _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
                 return 0
 
             after_wait = len(wait_checked)
@@ -1960,12 +2554,22 @@ def run_symbol_once(
             flow_row["death_reason"] = "apply_wait_confirmation"
             print(f"[TERMINAL][SKIP_NON_TERMINAL] stage=wait_confirmation reason=not_terminal")
             _append_flow_row(flow_log_csv, flow_row)
+            _append_cycle_candidate_diags(
+                _mark_raw_candidate_diag_rows(
+                    raw_candidate_diag_rows,
+                    wait_df=pd.DataFrame(entries),
+                    death_stage="wait_confirmation",
+                    death_reason="apply_wait_confirmation",
+                ),
+            )
+            _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
             return 0
 
 
     wait_df = pd.DataFrame(entries)
     flow_row["after_wait_count"] = int(len(wait_df))
     flow_row["model_summary_after_wait"] = _series_summary(wait_df, "model")
+    diag_wait_df = wait_df.copy()
 
     out_df = pd.DataFrame(entries)
     out_df = model_freshness_filter(out_df, latest_ts)
@@ -1980,6 +2584,15 @@ def run_symbol_once(
         flow_row["death_stage"] = "freshness"
         flow_row["death_reason"] = "model_freshness_filter"
         _append_flow_row(flow_log_csv, flow_row)
+        _append_cycle_candidate_diags(
+            _mark_raw_candidate_diag_rows(
+                raw_candidate_diag_rows,
+                wait_df=diag_wait_df,
+                death_stage="freshness",
+                death_reason="model_freshness_filter",
+            ),
+        )
+        _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
 
@@ -2007,6 +2620,16 @@ def run_symbol_once(
         flow_row["death_stage"] = "idempotency"
         flow_row["death_reason"] = "already_fired"
         _append_flow_row(flow_log_csv, flow_row)
+        _append_cycle_candidate_diags(
+            _mark_raw_candidate_diag_rows(
+                raw_candidate_diag_rows,
+                wait_df=diag_wait_df,
+                idempotency_df=out_df,
+                death_stage="idempotency",
+                death_reason="already_fired",
+            ),
+        )
+        _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
     out_df["observed_ts"] = latest_ts
@@ -2038,6 +2661,17 @@ def run_symbol_once(
         flow_row["death_stage"] = "stale"
         flow_row["death_reason"] = "filter_live_emit_candidates"
         _append_flow_row(flow_log_csv, flow_row)
+        _append_cycle_candidate_diags(
+            _mark_raw_candidate_diag_rows(
+                raw_candidate_diag_rows,
+                wait_df=diag_wait_df,
+                idempotency_df=before_stale_df,
+                stale_df=out_df,
+                death_stage="stale",
+                death_reason="filter_live_emit_candidates",
+            ),
+        )
+        _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
     out_df = select_newest_live_candidate(out_df)
@@ -2050,6 +2684,18 @@ def run_symbol_once(
         flow_row["death_stage"] = "final_selection"
         flow_row["death_reason"] = "select_newest_live_candidate"
         _append_flow_row(flow_log_csv, flow_row)
+        _append_cycle_candidate_diags(
+            _mark_raw_candidate_diag_rows(
+                raw_candidate_diag_rows,
+                wait_df=diag_wait_df,
+                idempotency_df=before_stale_df,
+                stale_df=out_df,
+                position_df=out_df,
+                death_stage="final_selection",
+                death_reason="select_newest_live_candidate",
+            ),
+        )
+        _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
     out_df, position_gate_skipped = _filter_position_overlap_candidates(
@@ -2070,6 +2716,18 @@ def run_symbol_once(
         flow_row["death_reason"] = "open_position_exists_at_intended_open_ts"
         flow_row["emitted_count"] = 0
         _append_flow_row(flow_log_csv, flow_row)
+        _append_cycle_candidate_diags(
+            _mark_raw_candidate_diag_rows(
+                raw_candidate_diag_rows,
+                wait_df=diag_wait_df,
+                idempotency_df=before_stale_df,
+                stale_df=out_df,
+                position_df=out_df,
+                death_stage="position_gate",
+                death_reason="open_position_exists_at_intended_open_ts",
+            ),
+        )
+        _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
     if position_gate_skipped > 0:
@@ -2162,6 +2820,19 @@ def run_symbol_once(
         flow_row["death_reason"] = "post_guard_no_emit"
 
     _append_flow_row(flow_log_csv, flow_row)
+    _append_cycle_candidate_diags(
+        _mark_raw_candidate_diag_rows(
+            raw_candidate_diag_rows,
+            wait_df=diag_wait_df,
+            idempotency_df=before_stale_df,
+            stale_df=out_df,
+            position_df=out_df,
+            emitted_df=out_df if written > 0 else pd.DataFrame(),
+            death_stage="emitted" if written > 0 else "post_guard",
+            death_reason="passed_all_filters" if written > 0 else "post_guard_no_emit",
+        ),
+    )
+    _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
 
     try:
         preview = out_df[
@@ -2198,6 +2869,10 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--debug_force_entries", action="store_true")
     ap.add_argument("--use_wait_confirmation", action="store_true")
     ap.add_argument("--candidate_pressure_csv", default="backtest/journal/exports_live/candidate_pressure.csv")
+    ap.add_argument("--raw_candidate_diag_csv", default="backtest/journal/exports_live/raw_candidate_lifecycle_diag.csv")
+    ap.add_argument("--pressure_window_summary_csv", default="backtest/journal/exports_live/pressure_window_summary.csv")
+    ap.add_argument("--sniper_candidate_diag_csv", default="backtest/journal/exports_live/sniper_candidate_diag.csv")
+    ap.add_argument("--sniper_candidate_summary_csv", default="backtest/journal/exports_live/sniper_candidate_summary.csv")
 
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
@@ -2224,6 +2899,10 @@ def main(argv: List[str] | None = None) -> int:
     fired_setups_csv = Path(args.fired_setups_csv)
     terminal_lifecycle_registry_csv = Path(args.terminal_lifecycle_registry_csv)
     flow_log_csv = Path(args.flow_log_csv)
+    raw_candidate_diag_csv = Path(args.raw_candidate_diag_csv)
+    pressure_window_summary_csv = Path(args.pressure_window_summary_csv)
+    sniper_candidate_diag_csv = Path(args.sniper_candidate_diag_csv)
+    sniper_candidate_summary_csv = Path(args.sniper_candidate_summary_csv)
 
     _ensure_output_csv(out_csv)
     _ensure_parent(flow_log_csv)
@@ -2269,6 +2948,10 @@ def main(argv: List[str] | None = None) -> int:
                     impulse_size_atr=float(args.impulse_size_atr),
                     tdp_dev_lookback=int(args.tdp_dev_lookback),
                     tts_retest_lookback=int(args.tts_retest_lookback),
+                    raw_candidate_diag_csv=str(raw_candidate_diag_csv),
+                    pressure_window_summary_csv=str(pressure_window_summary_csv),
+                    sniper_candidate_diag_csv=str(sniper_candidate_diag_csv),
+                    sniper_candidate_summary_csv=str(sniper_candidate_summary_csv),
                 )
                 cycle_written += written_for_symbol
 
