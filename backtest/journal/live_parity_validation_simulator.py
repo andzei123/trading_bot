@@ -95,6 +95,7 @@ PRIMARY_OUTPUT_SPECS: Dict[str, List[str]] = {
     "pressure_window_summary.csv": [],
     "sniper_candidate_diag.csv": [],
     "sniper_candidate_summary.csv": ["symbol", "model", "death_stage", "death_reason", "candidate_expansion_state", "candidate_count", "emitted_count"],
+    "tdp_stale_shadow_oos.csv": [],
 }
 
 FLOW_PARITY_COLUMNS = [
@@ -292,6 +293,7 @@ def _verify_run_symbol_once_signature(shell: ModuleType) -> List[str]:
         "pressure_window_summary_csv",
         "sniper_candidate_diag_csv",
         "sniper_candidate_summary_csv",
+        "tdp_stale_shadow_csv",
     ]
     missing = [p for p in required if p not in params]
     if missing:
@@ -488,6 +490,7 @@ def run_live_parity_replay(
     pressure_window_summary_csv: Optional[Path],
     sniper_candidate_diag_csv: Optional[Path],
     sniper_candidate_summary_csv: Optional[Path],
+    tdp_stale_shadow_csv: str,
     smoke_test: bool,
 ) -> None:
     shell = _load_shell_module(live_shell_py)
@@ -530,6 +533,10 @@ def run_live_parity_replay(
     sniper_candidate_summary_csv = _ensure_output_file(
         sniper_candidate_summary_csv or (out_dir / "sniper_candidate_summary.csv"),
         PRIMARY_OUTPUT_SPECS["sniper_candidate_summary.csv"],
+    )
+    tdp_stale_shadow_csv_path = _ensure_output_file(
+        Path(tdp_stale_shadow_csv) if tdp_stale_shadow_csv else (out_dir / "tdp_stale_shadow_oos.csv"),
+        PRIMARY_OUTPUT_SPECS["tdp_stale_shadow_oos.csv"],
     )
     state_dir = out_dir / "live_observation_state"
     _ensure_parent(state_dir / "dummy.txt")
@@ -617,6 +624,7 @@ def run_live_parity_replay(
                     "pressure_window_summary_csv": str(pressure_window_summary_csv),
                     "sniper_candidate_diag_csv": str(sniper_candidate_diag_csv),
                     "sniper_candidate_summary_csv": str(sniper_candidate_summary_csv),
+                    "tdp_stale_shadow_csv": str(tdp_stale_shadow_csv_path),
                 }
                 call_kwargs = {k: kwargs[k] for k in required_params}
                 written = shell.run_symbol_once(**call_kwargs)
@@ -661,6 +669,7 @@ def run_live_parity_replay(
         print(f"[LIVE_PARITY] pressure  -> {pressure_window_summary_csv}")
         print(f"[LIVE_PARITY] sniper_diag -> {sniper_candidate_diag_csv}")
         print(f"[LIVE_PARITY] sniper_summary -> {sniper_candidate_summary_csv}")
+        print(f"[LIVE_PARITY] tdp_stale_shadow -> {tdp_stale_shadow_csv_path}")
 
         if smoke_test:
             print("[SMOKE_TEST] first replay timestamp:", metrics["first_replay_ts"])
@@ -699,6 +708,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--pressure_window_summary_csv", default=None)
     ap.add_argument("--sniper_candidate_diag_csv", default=None)
     ap.add_argument("--sniper_candidate_summary_csv", default=None)
+    ap.add_argument("--tdp_stale_shadow_csv", default="")
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
     ap.add_argument("--cluster_rank_signal_score", action="store_true")
@@ -759,6 +769,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         pressure_window_summary_csv=Path(args.pressure_window_summary_csv) if args.pressure_window_summary_csv else None,
         sniper_candidate_diag_csv=Path(args.sniper_candidate_diag_csv) if args.sniper_candidate_diag_csv else None,
         sniper_candidate_summary_csv=Path(args.sniper_candidate_summary_csv) if args.sniper_candidate_summary_csv else None,
+        tdp_stale_shadow_csv=str(args.tdp_stale_shadow_csv or ""),
         smoke_test=bool(args.smoke_test),
     )
     return 0
