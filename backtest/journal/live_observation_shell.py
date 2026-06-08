@@ -190,6 +190,37 @@ TDP_STALE_SHADOW_COLUMNS = [
 
 TDP_STALE_SHADOW_PERSISTENCE_BY_KEY: Dict[str, int] = {}
 
+STRUCTURAL_TS_SHADOW_COLUMNS = [
+    "cycle_ts",
+    "structural_ts",
+    "symbol",
+    "side",
+    "model",
+    "canonical_setup_key",
+    "setup_id",
+    "setup_created_ts",
+    "candidate_ts",
+    "visible_ts",
+    "wait_confirm_ts",
+    "entry",
+    "sl",
+    "tp",
+    "planned_rr",
+    "setup_age_bars",
+    "setup_age_minutes",
+    "distance_to_entry_R",
+    "target_distance_pct",
+    "stop_distance_pct",
+    "raw_candidate_count",
+    "pressure_window_id",
+    "death_reason",
+    "is_emitted",
+    "passed_wait",
+    "passed_stale",
+    "passed_idempotency",
+    "passed_position_gate",
+]
+
 
 
 SNIPER_CANDIDATE_DIAG_COLUMNS = [
@@ -711,6 +742,71 @@ def _append_tdp_stale_shadow_rows(path_like, marked_rows: List[Dict[str, object]
         if col not in out.columns:
             out[col] = ""
     out = out[TDP_STALE_SHADOW_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+
+def _structural_ts_from_shadow_row(row: Dict[str, object]):
+    for source in ("structural_ts", "setup_created_ts", "candidate_ts", "timestamp"):
+        ts = pd.to_datetime(row.get(source, pd.NaT), utc=True, errors="coerce")
+        if pd.notna(ts):
+            return ts
+    return pd.NaT
+
+
+def _append_structural_ts_shadow_rows(path_like, marked_rows: List[Dict[str, object]]) -> None:
+    path = _diag_path(path_like)
+    if path is None or not marked_rows:
+        return
+
+    rows: List[Dict[str, object]] = []
+    for raw_row in marked_rows:
+        # Work on a shallow copy only. This logger must never mutate the
+        # diagnostic rows passed to other telemetry writers or trading logic.
+        r = dict(raw_row)
+        rows.append({
+            "cycle_ts": pd.to_datetime(r.get("cycle_ts", pd.NaT), utc=True, errors="coerce"),
+            "structural_ts": _structural_ts_from_shadow_row(r),
+            "symbol": str(r.get("symbol", "") or "").upper(),
+            "side": str(r.get("side", "") or "").upper(),
+            "model": str(r.get("model", "") or ""),
+            "canonical_setup_key": str(r.get("canonical_setup_key", "") or ""),
+            "setup_id": str(r.get("setup_id", "") or ""),
+            "setup_created_ts": pd.to_datetime(r.get("setup_created_ts", pd.NaT), utc=True, errors="coerce"),
+            "candidate_ts": pd.to_datetime(r.get("candidate_ts", r.get("timestamp", pd.NaT)), utc=True, errors="coerce"),
+            "visible_ts": pd.to_datetime(r.get("visible_ts", pd.NaT), utc=True, errors="coerce"),
+            "wait_confirm_ts": pd.to_datetime(r.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
+            "entry": r.get("entry", ""),
+            "sl": r.get("sl", ""),
+            "tp": r.get("tp", ""),
+            "planned_rr": r.get("planned_rr", ""),
+            "setup_age_bars": r.get("setup_age_bars", ""),
+            "setup_age_minutes": r.get("setup_age_minutes", ""),
+            "distance_to_entry_R": r.get("distance_to_entry_R", ""),
+            "target_distance_pct": r.get("target_distance_pct", ""),
+            "stop_distance_pct": r.get("stop_distance_pct", ""),
+            "raw_candidate_count": r.get("raw_candidate_count", r.get("pressure_raw_count", "")),
+            "pressure_window_id": str(r.get("pressure_window_id", "") or ""),
+            "death_reason": str(r.get("death_reason", "") or ""),
+            "is_emitted": bool(r.get("emitted", False)),
+            "passed_wait": bool(r.get("passed_wait", False)),
+            "passed_stale": bool(r.get("passed_stale", False)),
+            "passed_idempotency": bool(r.get("passed_idempotency", False)),
+            "passed_position_gate": bool(r.get("passed_position_gate", False)),
+        })
+
+    if not rows:
+        return
+
+    _ensure_parent(path)
+    out = pd.DataFrame(rows)
+    for col in STRUCTURAL_TS_SHADOW_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[STRUCTURAL_TS_SHADOW_COLUMNS]
     if not path.exists() or path.stat().st_size == 0:
         out.to_csv(path, index=False)
     else:
@@ -2475,6 +2571,7 @@ def run_symbol_once(
     sniper_candidate_diag_csv: str = "",
     sniper_candidate_summary_csv: str = "",
     tdp_stale_shadow_csv: str = "",
+    structural_ts_shadow_csv: str = "",
 ) -> int:
     candles_df = load_bybit_latest(category, symbol, interval, candles_n)
     fetch_status = LAST_BYBIT_FETCH_STATUS.get(str(symbol).upper(), FETCH_STATUS_EMPTY)
@@ -2526,6 +2623,7 @@ def run_symbol_once(
     def _append_cycle_candidate_diags(marked_rows: List[Dict[str, object]]) -> None:
         _append_raw_candidate_lifecycle_diag(raw_candidate_diag_csv, marked_rows)
         _append_tdp_stale_shadow_rows(tdp_stale_shadow_csv, marked_rows)
+        _append_structural_ts_shadow_rows(structural_ts_shadow_csv, marked_rows)
         _append_sniper_candidate_outputs(
             sniper_candidate_diag_csv=sniper_candidate_diag_csv,
             sniper_candidate_summary_csv=sniper_candidate_summary_csv,
@@ -3237,6 +3335,7 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--sniper_candidate_diag_csv", default="backtest/journal/exports_live/sniper_candidate_diag.csv")
     ap.add_argument("--sniper_candidate_summary_csv", default="backtest/journal/exports_live/sniper_candidate_summary.csv")
     ap.add_argument("--tdp_stale_shadow_csv", default=None)
+    ap.add_argument("--structural_ts_shadow_csv", default=None)
 
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
@@ -3268,6 +3367,7 @@ def main(argv: List[str] | None = None) -> int:
     sniper_candidate_diag_csv = Path(args.sniper_candidate_diag_csv)
     sniper_candidate_summary_csv = Path(args.sniper_candidate_summary_csv)
     tdp_stale_shadow_csv = "" if args.tdp_stale_shadow_csv is None else str(args.tdp_stale_shadow_csv)
+    structural_ts_shadow_csv = "" if args.structural_ts_shadow_csv is None else str(args.structural_ts_shadow_csv)
 
     _ensure_output_csv(out_csv)
     _ensure_parent(flow_log_csv)
@@ -3318,6 +3418,7 @@ def main(argv: List[str] | None = None) -> int:
                     sniper_candidate_diag_csv=str(sniper_candidate_diag_csv),
                     sniper_candidate_summary_csv=str(sniper_candidate_summary_csv),
                     tdp_stale_shadow_csv=tdp_stale_shadow_csv,
+                    structural_ts_shadow_csv=structural_ts_shadow_csv,
                 )
                 cycle_written += written_for_symbol
 
