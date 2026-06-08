@@ -142,7 +142,53 @@ RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS = [
     "pressure_window_age_bars",
     "pressure_window_duration_bars",
     "pressure_window_peak_raw",
+    "setup_age_minutes",
+    "setup_age_bars",
+    "range_width_pct",
+    "entry_to_range_high_pct",
+    "entry_to_range_low_pct",
+    "target_distance_pct",
+    "stop_distance_pct",
+    "planned_rr",
+    "risk_pct",
+    "reward_pct",
+    "risk_distance",
+    "reward_distance",
+    "distance_to_entry_pct",
+    "distance_to_entry_R",
 ]
+
+TDP_STALE_SHADOW_COLUMNS = [
+    "cycle_ts",
+    "symbol",
+    "side",
+    "model",
+    "canonical_setup_key",
+    "setup_id",
+    "setup_created_ts",
+    "candidate_ts",
+    "visible_ts",
+    "wait_confirm_ts",
+    "candidate_latest_ts",
+    "entry_window_expires_ts",
+    "death_reason",
+    "entry",
+    "sl",
+    "tp",
+    "planned_rr",
+    "setup_age_bars",
+    "setup_age_minutes",
+    "distance_to_entry_R",
+    "target_distance_pct",
+    "stop_distance_pct",
+    "raw_candidate_count",
+    "pressure_window_id",
+    "candidate_persistence_bars",
+    "would_shadow_entry_ts",
+    "shadow_entry_source",
+]
+
+TDP_STALE_SHADOW_PERSISTENCE_BY_KEY: Dict[str, int] = {}
 
 
 
@@ -168,12 +214,33 @@ SNIPER_CANDIDATE_DIAG_COLUMNS = [
     "groups_gt3",
     "pressure_window_id",
     "pressure_window_age",
+    "pressure_window_age_bars",
+    "pressure_window_duration_bars",
+    "pressure_window_peak_raw",
     "pressure_window_candidate_count",
+    "setup_age_minutes",
+    "setup_age_bars",
+    "range_width_pct",
+    "entry_to_range_high_pct",
+    "entry_to_range_low_pct",
+    "target_distance_pct",
+    "stop_distance_pct",
+    "planned_rr",
+    "risk_pct",
+    "reward_pct",
+    "risk_distance",
+    "reward_distance",
+    "distance_to_entry_pct",
+    "distance_to_entry_R",
     "candidate_persistence_bars",
     "is_candidate_expansion",
     "is_candidate_flat",
     "is_candidate_contraction",
     "is_emitted",
+    "passed_wait",
+    "passed_stale",
+    "passed_idempotency",
+    "passed_position_gate",
 ]
 
 SNIPER_CANDIDATE_SUMMARY_COLUMNS = [
@@ -188,6 +255,7 @@ SNIPER_CANDIDATE_SUMMARY_COLUMNS = [
 
 SNIPER_PREV_RAW_COUNT_BY_SYMBOL: Dict[str, int] = {}
 SNIPER_PERSISTENCE_BY_KEY: Dict[str, int] = {}
+RAW_PRESSURE_WINDOW_BY_SYMBOL: Dict[str, Dict[str, object]] = {}
 
 PRESSURE_WINDOW_SUMMARY_COLUMNS = [
     "symbol",
@@ -256,12 +324,188 @@ def _diag_key_set(df: Optional[pd.DataFrame]) -> Set[str]:
     return keys
 
 
+def _telemetry_float(value: object):
+    try:
+        out = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    except Exception:
+        return None
+    if pd.isna(out):
+        return None
+    return float(out)
+
+
+def _telemetry_first_present(row: pd.Series, names: List[str]):
+    for name in names:
+        if name in row.index:
+            value = row.get(name, "")
+            if value is not None and str(value) != "" and str(value).lower() != "nan":
+                return value
+    return ""
+
+
+def _telemetry_ts(value: object):
+    return pd.to_datetime(value, utc=True, errors="coerce")
+
+
+def _telemetry_candidate_first_seen_ts(row: pd.Series, latest_ts: pd.Timestamp):
+    first_seen_ts = _telemetry_ts(_telemetry_first_present(row, ["first_seen_ts", "visible_ts", "observed_ts", "cycle_ts"]))
+    if pd.isna(first_seen_ts):
+        first_seen_ts = _telemetry_ts(latest_ts)
+    return first_seen_ts
+
+
+def _telemetry_price_at_or_before(candles_df: Optional[pd.DataFrame], ts_value):
+    if candles_df is None or candles_df.empty or "timestamp" not in candles_df.columns or "close" not in candles_df.columns:
+        return None
+    c = candles_df[["timestamp", "close"]].copy()
+    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True, errors="coerce")
+    c["close"] = pd.to_numeric(c["close"], errors="coerce")
+    c = c.dropna(subset=["timestamp", "close"]).sort_values("timestamp")
+    if c.empty:
+        return None
+    ts_value = _telemetry_ts(ts_value)
+    if pd.notna(ts_value):
+        before = c.loc[c["timestamp"] <= ts_value]
+        if not before.empty:
+            return float(before.iloc[-1]["close"])
+    return None
+
+
+def _telemetry_range_bounds_between(candles_df: Optional[pd.DataFrame], start_ts, end_ts):
+    start_ts = _telemetry_ts(start_ts)
+    end_ts = _telemetry_ts(end_ts)
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return None, None
+    if candles_df is None or candles_df.empty or "timestamp" not in candles_df.columns:
+        return None, None
+    high_col = "high" if "high" in candles_df.columns else "High" if "High" in candles_df.columns else ""
+    low_col = "low" if "low" in candles_df.columns else "Low" if "Low" in candles_df.columns else ""
+    if not high_col or not low_col:
+        return None, None
+    c = candles_df[["timestamp", high_col, low_col]].copy()
+    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True, errors="coerce")
+    c[high_col] = pd.to_numeric(c[high_col], errors="coerce")
+    c[low_col] = pd.to_numeric(c[low_col], errors="coerce")
+    c = c.dropna(subset=["timestamp", high_col, low_col]).sort_values("timestamp")
+    if c.empty:
+        return None, None
+    if c["timestamp"].iloc[0] > start_ts or c["timestamp"].iloc[-1] < end_ts:
+        return None, None
+    window = c.loc[(c["timestamp"] >= start_ts) & (c["timestamp"] <= end_ts)]
+    if window.empty:
+        return None, None
+    return float(window[high_col].max()), float(window[low_col].min())
+
+
+def _telemetry_closed_bars_between(candles_df: Optional[pd.DataFrame], start_ts, end_ts):
+    start_ts = _telemetry_ts(start_ts)
+    end_ts = _telemetry_ts(end_ts)
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return ""
+    if candles_df is not None and not candles_df.empty and "timestamp" in candles_df.columns:
+        ts = pd.to_datetime(candles_df["timestamp"], utc=True, errors="coerce").dropna().sort_values()
+        if not ts.empty:
+            return int(((ts > start_ts) & (ts <= end_ts)).sum())
+    minutes = (end_ts - start_ts).total_seconds() / 60.0
+    if minutes < 0:
+        return ""
+    return int(minutes // 15.0)
+
+
+def _telemetry_pressure_window_fields(symbol: str, latest_ts: pd.Timestamp, raw_count: int) -> Dict[str, object]:
+    sym = str(symbol or "").upper()
+    latest_ts = _telemetry_ts(latest_ts)
+    if raw_count <= 0 or pd.isna(latest_ts):
+        RAW_PRESSURE_WINDOW_BY_SYMBOL.pop(sym, None)
+        return {
+            "pressure_window_id": "",
+            "pressure_window_age_bars": "",
+            "pressure_window_duration_bars": "",
+            "pressure_window_peak_raw": "",
+        }
+
+    state = RAW_PRESSURE_WINDOW_BY_SYMBOL.get(sym)
+    if not state:
+        state = {
+            "window_start": latest_ts,
+            "window_id": f"{sym}|{latest_ts.isoformat()}",
+            "duration_bars": 0,
+            "peak_raw": 0,
+            "last_ts": pd.NaT,
+        }
+    last_ts = _telemetry_ts(state.get("last_ts", pd.NaT))
+    if pd.isna(last_ts) or last_ts != latest_ts:
+        state["duration_bars"] = int(state.get("duration_bars", 0) or 0) + 1
+        state["last_ts"] = latest_ts
+    state["peak_raw"] = max(int(state.get("peak_raw", 0) or 0), int(raw_count))
+    RAW_PRESSURE_WINDOW_BY_SYMBOL[sym] = state
+
+    duration_bars = int(state.get("duration_bars", 0) or 0)
+    return {
+        "pressure_window_id": str(state.get("window_id", "") or ""),
+        "pressure_window_age_bars": max(0, duration_bars - 1),
+        "pressure_window_duration_bars": duration_bars,
+        "pressure_window_peak_raw": int(state.get("peak_raw", raw_count) or raw_count),
+    }
+
+
+def _telemetry_range_and_rr_fields(row: pd.Series, *, candles_df: Optional[pd.DataFrame], setup_created_ts, first_seen_ts) -> Dict[str, object]:
+    entry = _telemetry_float(_telemetry_first_present(row, ["entry", "planned_entry", "entry_price"]))
+    stop = _telemetry_float(_telemetry_first_present(row, ["sl", "stop", "stop_loss"]))
+    target = _telemetry_float(_telemetry_first_present(row, ["tp", "target", "take_profit"]))
+    range_high, range_low = _telemetry_range_bounds_between(candles_df, setup_created_ts, first_seen_ts)
+    if range_high is None or range_low is None:
+        range_high = _telemetry_float(_telemetry_first_present(row, ["range_high", "range_top", "range_upper", "range_high_price", "tdp_range_high", "ctx_range_high"]))
+        range_low = _telemetry_float(_telemetry_first_present(row, ["range_low", "range_bottom", "range_lower", "range_low_price", "tdp_range_low", "ctx_range_low"]))
+    first_seen_price = _telemetry_price_at_or_before(candles_df, first_seen_ts)
+
+    out: Dict[str, object] = {
+        "range_width_pct": "",
+        "entry_to_range_high_pct": "",
+        "entry_to_range_low_pct": "",
+        "target_distance_pct": "",
+        "stop_distance_pct": "",
+        "planned_rr": "",
+        "risk_pct": "",
+        "reward_pct": "",
+        "risk_distance": "",
+        "reward_distance": "",
+        "distance_to_entry_pct": "",
+        "distance_to_entry_R": "",
+    }
+    if entry is not None and entry != 0:
+        if range_high is not None and range_low is not None:
+            out["range_width_pct"] = abs(range_high - range_low) / abs(entry)
+            out["entry_to_range_high_pct"] = abs(entry - range_high) / abs(entry)
+            out["entry_to_range_low_pct"] = abs(entry - range_low) / abs(entry)
+        if target is not None:
+            out["target_distance_pct"] = abs(entry - target) / abs(entry)
+        if stop is not None:
+            out["stop_distance_pct"] = abs(entry - stop) / abs(entry)
+        if first_seen_price is not None:
+            out["distance_to_entry_pct"] = abs(first_seen_price - entry) / abs(entry)
+    if entry is not None and stop is not None and target is not None:
+        risk_distance = abs(entry - stop)
+        reward_distance = abs(entry - target)
+        out["risk_distance"] = risk_distance
+        out["reward_distance"] = reward_distance
+        if entry != 0:
+            out["risk_pct"] = risk_distance / abs(entry)
+            out["reward_pct"] = reward_distance / abs(entry)
+        if risk_distance != 0:
+            out["planned_rr"] = reward_distance / risk_distance
+            if first_seen_price is not None:
+                out["distance_to_entry_R"] = abs(first_seen_price - entry) / risk_distance
+    return out
+
+
 def _make_raw_candidate_diag_rows(
     *,
     candidates_df: Optional[pd.DataFrame],
     cycle_ts: pd.Timestamp,
     symbol: str,
     latest_ts: pd.Timestamp,
+    candles_df: Optional[pd.DataFrame] = None,
 ) -> List[Dict[str, object]]:
     """Build immutable telemetry snapshots for raw candidates.
 
@@ -269,12 +513,26 @@ def _make_raw_candidate_diag_rows(
     dataframe that continues through trading gates.
     """
     if candidates_df is None or candidates_df.empty:
+        _telemetry_pressure_window_fields(symbol, latest_ts, 0)
         return []
 
     rows: List[Dict[str, object]] = []
     raw_count = int(len(candidates_df))
+    pressure_fields = _telemetry_pressure_window_fields(symbol, latest_ts, raw_count)
     for _, r in candidates_df.iterrows():
         candidate_ts = pd.to_datetime(r.get("timestamp", pd.NaT), utc=True, errors="coerce")
+        setup_created_ts = pd.to_datetime(r.get("setup_created_ts", candidate_ts), utc=True, errors="coerce")
+        first_seen_ts = _telemetry_candidate_first_seen_ts(r, latest_ts)
+        setup_age_minutes: object = ""
+        if pd.notna(setup_created_ts) and pd.notna(first_seen_ts):
+            setup_age_minutes = max(0.0, float((first_seen_ts - setup_created_ts).total_seconds() / 60.0))
+        setup_age_bars = _telemetry_closed_bars_between(candles_df, setup_created_ts, first_seen_ts)
+        range_rr_fields = _telemetry_range_and_rr_fields(
+            r,
+            candles_df=candles_df,
+            setup_created_ts=setup_created_ts,
+            first_seen_ts=first_seen_ts,
+        )
         row = {
             "cycle_ts": pd.to_datetime(cycle_ts, utc=True, errors="coerce"),
             "symbol": str(r.get("symbol", symbol) or symbol).upper(),
@@ -284,15 +542,17 @@ def _make_raw_candidate_diag_rows(
             "side": str(r.get("side", "") or "").upper(),
             "setup_id": str(r.get("setup_id", "") or ""),
             "canonical_setup_key": str(r.get("canonical_setup_key", "") or ""),
-            "setup_created_ts": pd.to_datetime(r.get("setup_created_ts", candidate_ts), utc=True, errors="coerce"),
+            "setup_created_ts": setup_created_ts,
             "timestamp": candidate_ts,
             "visible_ts": pd.to_datetime(r.get("visible_ts", pd.NaT), utc=True, errors="coerce"),
             "entry_anchor_ts": pd.to_datetime(r.get("entry_anchor_ts", pd.NaT), utc=True, errors="coerce"),
             "wait_confirm_ts": pd.to_datetime(r.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
+            "candidate_latest_ts": pd.to_datetime(r.get("candidate_latest_ts", pd.NaT), utc=True, errors="coerce"),
+            "entry_window_expires_ts": pd.to_datetime(r.get("entry_window_expires_ts", pd.NaT), utc=True, errors="coerce"),
             "intended_entry_ts": pd.to_datetime(r.get("intended_entry_ts", pd.NaT), utc=True, errors="coerce"),
-            "entry": r.get("entry", ""),
-            "sl": r.get("sl", ""),
-            "tp": r.get("tp", ""),
+            "entry": _telemetry_first_present(r, ["entry", "planned_entry", "entry_price"]),
+            "sl": _telemetry_first_present(r, ["sl", "stop", "stop_loss"]),
+            "tp": _telemetry_first_present(r, ["tp", "target", "take_profit"]),
             "rr": r.get("rr", ""),
             "phase": str(r.get("phase", "") or ""),
             "range_retest_score": r.get("range_retest_score", ""),
@@ -309,11 +569,14 @@ def _make_raw_candidate_diag_rows(
             "pressure_raw_count": raw_count,
             "pressure_group_count": "",
             "inside_pressure_window": bool(raw_count > 0),
-            "pressure_window_id": "",
-            "pressure_window_age_bars": "",
-            "pressure_window_duration_bars": "",
-            "pressure_window_peak_raw": raw_count,
+            "pressure_window_id": pressure_fields["pressure_window_id"],
+            "pressure_window_age_bars": pressure_fields["pressure_window_age_bars"],
+            "pressure_window_duration_bars": pressure_fields["pressure_window_duration_bars"],
+            "pressure_window_peak_raw": pressure_fields["pressure_window_peak_raw"],
+            "setup_age_minutes": setup_age_minutes,
+            "setup_age_bars": setup_age_bars,
         }
+        row.update(range_rr_fields)
         rows.append(row)
     return rows
 
@@ -372,6 +635,82 @@ def _append_raw_candidate_lifecycle_diag(path_like, rows: List[Dict[str, object]
         if col not in out.columns:
             out[col] = ""
     out = out[RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+def _tdp_stale_shadow_entry_ts(row: Dict[str, object]):
+    for source in ("candidate_latest_ts", "visible_ts", "candidate_ts", "cycle_ts"):
+        ts = pd.to_datetime(row.get(source, pd.NaT), utc=True, errors="coerce")
+        if pd.notna(ts):
+            return ts, source
+    return pd.NaT, ""
+
+
+def _append_tdp_stale_shadow_rows(path_like, marked_rows: List[Dict[str, object]]) -> None:
+    path = _diag_path(path_like)
+    if path is None or not marked_rows:
+        return
+
+    rows: List[Dict[str, object]] = []
+    for raw_row in marked_rows:
+        # Work on a shallow copy only. This logger must never mutate the
+        # diagnostic rows passed to other telemetry writers.
+        r = dict(raw_row)
+
+        if str(r.get("model", "")) != "TDP_REENTRY":
+            continue
+        if str(r.get("death_reason", "")) != "stale_execution_window":
+            continue
+
+        k = str(r.get("canonical_setup_key") or r.get("setup_id") or "")
+        persistence_bars = ""
+        if k:
+            persistence_bars = int(TDP_STALE_SHADOW_PERSISTENCE_BY_KEY.get(k, 0) + 1)
+            TDP_STALE_SHADOW_PERSISTENCE_BY_KEY[k] = persistence_bars
+
+        would_shadow_entry_ts, shadow_entry_source = _tdp_stale_shadow_entry_ts(r)
+        rows.append({
+            "cycle_ts": pd.to_datetime(r.get("cycle_ts", pd.NaT), utc=True, errors="coerce"),
+            "symbol": str(r.get("symbol", "") or "").upper(),
+            "side": str(r.get("side", "") or "").upper(),
+            "model": str(r.get("model", "") or ""),
+            "canonical_setup_key": str(r.get("canonical_setup_key", "") or ""),
+            "setup_id": str(r.get("setup_id", "") or ""),
+            "setup_created_ts": pd.to_datetime(r.get("setup_created_ts", pd.NaT), utc=True, errors="coerce"),
+            "candidate_ts": pd.to_datetime(r.get("candidate_ts", r.get("timestamp", pd.NaT)), utc=True, errors="coerce"),
+            "visible_ts": pd.to_datetime(r.get("visible_ts", pd.NaT), utc=True, errors="coerce"),
+            "wait_confirm_ts": pd.to_datetime(r.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
+            "candidate_latest_ts": pd.to_datetime(r.get("candidate_latest_ts", pd.NaT), utc=True, errors="coerce"),
+            "entry_window_expires_ts": pd.to_datetime(r.get("entry_window_expires_ts", pd.NaT), utc=True, errors="coerce"),
+            "death_reason": str(r.get("death_reason", "") or ""),
+            "entry": r.get("entry", ""),
+            "sl": r.get("sl", ""),
+            "tp": r.get("tp", ""),
+            "planned_rr": r.get("planned_rr", ""),
+            "setup_age_bars": r.get("setup_age_bars", ""),
+            "setup_age_minutes": r.get("setup_age_minutes", ""),
+            "distance_to_entry_R": r.get("distance_to_entry_R", ""),
+            "target_distance_pct": r.get("target_distance_pct", ""),
+            "stop_distance_pct": r.get("stop_distance_pct", ""),
+            "raw_candidate_count": r.get("raw_candidate_count", r.get("pressure_raw_count", "")),
+            "pressure_window_id": str(r.get("pressure_window_id", "") or ""),
+            "candidate_persistence_bars": persistence_bars,
+            "would_shadow_entry_ts": would_shadow_entry_ts,
+            "shadow_entry_source": shadow_entry_source,
+        })
+
+    if not rows:
+        return
+
+    _ensure_parent(path)
+    out = pd.DataFrame(rows)
+    for col in TDP_STALE_SHADOW_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[TDP_STALE_SHADOW_COLUMNS]
     if not path.exists() or path.stat().st_size == 0:
         out.to_csv(path, index=False)
     else:
@@ -448,9 +787,9 @@ def _make_sniper_candidate_diag_rows(
             "wait_confirm_ts": pd.to_datetime(r.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
             "death_stage": str(r.get("death_stage", "") or ""),
             "death_reason": str(r.get("death_reason", "") or ""),
-            "entry": r.get("entry", ""),
-            "sl": r.get("sl", ""),
-            "tp": r.get("tp", ""),
+            "entry": _telemetry_first_present(pd.Series(r), ["entry", "planned_entry", "entry_price"]),
+            "sl": _telemetry_first_present(pd.Series(r), ["sl", "stop", "stop_loss"]),
+            "tp": _telemetry_first_present(pd.Series(r), ["tp", "target", "take_profit"]),
             "raw_candidate_count": raw_candidate_count,
             "prev_raw_candidate_count": prev_raw_count,
             "raw_count_delta": raw_count_delta,
@@ -460,12 +799,33 @@ def _make_sniper_candidate_diag_rows(
             "groups_gt3": groups_gt3,
             "pressure_window_id": str(r.get("pressure_window_id", "") or ""),
             "pressure_window_age": r.get("pressure_window_age_bars", ""),
+            "pressure_window_age_bars": r.get("pressure_window_age_bars", ""),
+            "pressure_window_duration_bars": r.get("pressure_window_duration_bars", ""),
+            "pressure_window_peak_raw": r.get("pressure_window_peak_raw", ""),
             "pressure_window_candidate_count": r.get("pressure_raw_count", raw_candidate_count),
+            "setup_age_minutes": r.get("setup_age_minutes", ""),
+            "setup_age_bars": r.get("setup_age_bars", ""),
+            "range_width_pct": r.get("range_width_pct", ""),
+            "entry_to_range_high_pct": r.get("entry_to_range_high_pct", ""),
+            "entry_to_range_low_pct": r.get("entry_to_range_low_pct", ""),
+            "target_distance_pct": r.get("target_distance_pct", ""),
+            "stop_distance_pct": r.get("stop_distance_pct", ""),
+            "planned_rr": r.get("planned_rr", ""),
+            "risk_pct": r.get("risk_pct", ""),
+            "reward_pct": r.get("reward_pct", ""),
+            "risk_distance": r.get("risk_distance", ""),
+            "reward_distance": r.get("reward_distance", ""),
+            "distance_to_entry_pct": r.get("distance_to_entry_pct", ""),
+            "distance_to_entry_R": r.get("distance_to_entry_R", ""),
             "candidate_persistence_bars": persistence_bars,
             "is_candidate_expansion": is_expansion,
             "is_candidate_flat": is_flat,
             "is_candidate_contraction": is_contraction,
             "is_emitted": bool(r.get("emitted", False)),
+            "passed_wait": bool(r.get("passed_wait", False)),
+            "passed_stale": bool(r.get("passed_stale", False)),
+            "passed_idempotency": bool(r.get("passed_idempotency", False)),
+            "passed_position_gate": bool(r.get("passed_position_gate", False)),
         })
         if k:
             SNIPER_PERSISTENCE_BY_KEY[k] = persistence_bars
@@ -2114,6 +2474,7 @@ def run_symbol_once(
     pressure_window_summary_csv: str = "",
     sniper_candidate_diag_csv: str = "",
     sniper_candidate_summary_csv: str = "",
+    tdp_stale_shadow_csv: str = "",
 ) -> int:
     candles_df = load_bybit_latest(category, symbol, interval, candles_n)
     fetch_status = LAST_BYBIT_FETCH_STATUS.get(str(symbol).upper(), FETCH_STATUS_EMPTY)
@@ -2164,6 +2525,7 @@ def run_symbol_once(
 
     def _append_cycle_candidate_diags(marked_rows: List[Dict[str, object]]) -> None:
         _append_raw_candidate_lifecycle_diag(raw_candidate_diag_csv, marked_rows)
+        _append_tdp_stale_shadow_rows(tdp_stale_shadow_csv, marked_rows)
         _append_sniper_candidate_outputs(
             sniper_candidate_diag_csv=sniper_candidate_diag_csv,
             sniper_candidate_summary_csv=sniper_candidate_summary_csv,
@@ -2414,6 +2776,7 @@ def run_symbol_once(
         cycle_ts=cycle_ts,
         symbol=symbol,
         latest_ts=latest_ts,
+        candles_df=candles_df,
     )
     if debug:
         _time_alignment_audit(
@@ -2873,6 +3236,7 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--pressure_window_summary_csv", default="backtest/journal/exports_live/pressure_window_summary.csv")
     ap.add_argument("--sniper_candidate_diag_csv", default="backtest/journal/exports_live/sniper_candidate_diag.csv")
     ap.add_argument("--sniper_candidate_summary_csv", default="backtest/journal/exports_live/sniper_candidate_summary.csv")
+    ap.add_argument("--tdp_stale_shadow_csv", default=None)
 
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
@@ -2903,6 +3267,7 @@ def main(argv: List[str] | None = None) -> int:
     pressure_window_summary_csv = Path(args.pressure_window_summary_csv)
     sniper_candidate_diag_csv = Path(args.sniper_candidate_diag_csv)
     sniper_candidate_summary_csv = Path(args.sniper_candidate_summary_csv)
+    tdp_stale_shadow_csv = "" if args.tdp_stale_shadow_csv is None else str(args.tdp_stale_shadow_csv)
 
     _ensure_output_csv(out_csv)
     _ensure_parent(flow_log_csv)
@@ -2952,6 +3317,7 @@ def main(argv: List[str] | None = None) -> int:
                     pressure_window_summary_csv=str(pressure_window_summary_csv),
                     sniper_candidate_diag_csv=str(sniper_candidate_diag_csv),
                     sniper_candidate_summary_csv=str(sniper_candidate_summary_csv),
+                    tdp_stale_shadow_csv=tdp_stale_shadow_csv,
                 )
                 cycle_written += written_for_symbol
 
