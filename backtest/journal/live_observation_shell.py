@@ -2572,6 +2572,8 @@ def run_symbol_once(
     sniper_candidate_summary_csv: str = "",
     tdp_stale_shadow_csv: str = "",
     structural_ts_shadow_csv: str = "",
+    pre_visible_entry_exposure_csv: str = "",
+    entry_model_pre_admission_csv: str = "",
 ) -> int:
     candles_df = load_bybit_latest(category, symbol, interval, candles_n)
     fetch_status = LAST_BYBIT_FETCH_STATUS.get(str(symbol).upper(), FETCH_STATUS_EMPTY)
@@ -2691,6 +2693,9 @@ def run_symbol_once(
         "debug_force_entries": bool(debug_force_entries),
         "force_entries": bool(debug_force_entries),
         "debug_entry_force": bool(debug_force_entries),
+        "cycle_ts": pd.to_datetime(cycle_ts, utc=True, errors="coerce"),
+        "pre_visible_entry_exposure_csv": str(pre_visible_entry_exposure_csv or ""),
+        "entry_model_pre_admission_csv": str(entry_model_pre_admission_csv or ""),
         "DEBUG_FORCE_ENTRIES": bool(debug_force_entries),
     }
 
@@ -3336,6 +3341,8 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--sniper_candidate_summary_csv", default="backtest/journal/exports_live/sniper_candidate_summary.csv")
     ap.add_argument("--tdp_stale_shadow_csv", default=None)
     ap.add_argument("--structural_ts_shadow_csv", default=None)
+    ap.add_argument("--pre_visible_entry_exposure_csv", default=None)
+    ap.add_argument("--entry_model_pre_admission_csv", default=None)
 
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
@@ -3368,6 +3375,8 @@ def main(argv: List[str] | None = None) -> int:
     sniper_candidate_summary_csv = Path(args.sniper_candidate_summary_csv)
     tdp_stale_shadow_csv = "" if args.tdp_stale_shadow_csv is None else str(args.tdp_stale_shadow_csv)
     structural_ts_shadow_csv = "" if args.structural_ts_shadow_csv is None else str(args.structural_ts_shadow_csv)
+    pre_visible_entry_exposure_csv = "" if args.pre_visible_entry_exposure_csv is None else str(args.pre_visible_entry_exposure_csv)
+    entry_model_pre_admission_csv = "" if args.entry_model_pre_admission_csv is None else str(args.entry_model_pre_admission_csv)
 
     _ensure_output_csv(out_csv)
     _ensure_parent(flow_log_csv)
@@ -3419,6 +3428,8 @@ def main(argv: List[str] | None = None) -> int:
                     sniper_candidate_summary_csv=str(sniper_candidate_summary_csv),
                     tdp_stale_shadow_csv=tdp_stale_shadow_csv,
                     structural_ts_shadow_csv=structural_ts_shadow_csv,
+                    pre_visible_entry_exposure_csv=pre_visible_entry_exposure_csv,
+                    entry_model_pre_admission_csv=entry_model_pre_admission_csv,
                 )
                 cycle_written += written_for_symbol
 

@@ -97,6 +97,8 @@ PRIMARY_OUTPUT_SPECS: Dict[str, List[str]] = {
     "sniper_candidate_summary.csv": ["symbol", "model", "death_stage", "death_reason", "candidate_expansion_state", "candidate_count", "emitted_count"],
     "tdp_stale_shadow_oos.csv": [],
     "structural_ts_shadow_oos.csv": [],
+    "pre_visible_entry_exposure.csv": [],
+    "entry_model_pre_admission.csv": [],
 }
 
 FLOW_PARITY_COLUMNS = [
@@ -296,6 +298,8 @@ def _verify_run_symbol_once_signature(shell: ModuleType) -> List[str]:
         "sniper_candidate_summary_csv",
         "tdp_stale_shadow_csv",
         "structural_ts_shadow_csv",
+        "pre_visible_entry_exposure_csv",
+        "entry_model_pre_admission_csv",
     ]
     missing = [p for p in required if p not in params]
     if missing:
@@ -494,6 +498,8 @@ def run_live_parity_replay(
     sniper_candidate_summary_csv: Optional[Path],
     tdp_stale_shadow_csv: str,
     structural_ts_shadow_csv: str,
+    pre_visible_entry_exposure_csv: str,
+    entry_model_pre_admission_csv: str,
     smoke_test: bool,
 ) -> None:
     shell = _load_shell_module(live_shell_py)
@@ -544,6 +550,14 @@ def run_live_parity_replay(
     structural_ts_shadow_csv_path = _ensure_output_file(
         Path(structural_ts_shadow_csv) if structural_ts_shadow_csv else (out_dir / "structural_ts_shadow_oos.csv"),
         PRIMARY_OUTPUT_SPECS["structural_ts_shadow_oos.csv"],
+    )
+    pre_visible_entry_exposure_csv_path = _ensure_output_file(
+        Path(pre_visible_entry_exposure_csv) if pre_visible_entry_exposure_csv else (out_dir / "pre_visible_entry_exposure.csv"),
+        PRIMARY_OUTPUT_SPECS["pre_visible_entry_exposure.csv"],
+    )
+    entry_model_pre_admission_csv_path = _ensure_output_file(
+        Path(entry_model_pre_admission_csv) if entry_model_pre_admission_csv else (out_dir / "entry_model_pre_admission.csv"),
+        PRIMARY_OUTPUT_SPECS["entry_model_pre_admission.csv"],
     )
     state_dir = out_dir / "live_observation_state"
     _ensure_parent(state_dir / "dummy.txt")
@@ -633,6 +647,8 @@ def run_live_parity_replay(
                     "sniper_candidate_summary_csv": str(sniper_candidate_summary_csv),
                     "tdp_stale_shadow_csv": str(tdp_stale_shadow_csv_path),
                     "structural_ts_shadow_csv": str(structural_ts_shadow_csv_path),
+                    "pre_visible_entry_exposure_csv": str(pre_visible_entry_exposure_csv_path),
+                    "entry_model_pre_admission_csv": str(entry_model_pre_admission_csv_path),
                 }
                 call_kwargs = {k: kwargs[k] for k in required_params}
                 written = shell.run_symbol_once(**call_kwargs)
@@ -679,6 +695,8 @@ def run_live_parity_replay(
         print(f"[LIVE_PARITY] sniper_summary -> {sniper_candidate_summary_csv}")
         print(f"[LIVE_PARITY] tdp_stale_shadow -> {tdp_stale_shadow_csv_path}")
         print(f"[LIVE_PARITY] structural_ts_shadow -> {structural_ts_shadow_csv_path}")
+        print(f"[LIVE_PARITY] pre_visible_entry_exposure -> {pre_visible_entry_exposure_csv_path}")
+        print(f"[LIVE_PARITY] entry_model_pre_admission -> {entry_model_pre_admission_csv_path}")
 
         if smoke_test:
             print("[SMOKE_TEST] first replay timestamp:", metrics["first_replay_ts"])
@@ -719,6 +737,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--sniper_candidate_summary_csv", default=None)
     ap.add_argument("--tdp_stale_shadow_csv", default="")
     ap.add_argument("--structural_ts_shadow_csv", default="")
+    ap.add_argument("--pre_visible_entry_exposure_csv", default="")
+    ap.add_argument("--entry_model_pre_admission_csv", default="")
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
     ap.add_argument("--cluster_rank_signal_score", action="store_true")
@@ -781,6 +801,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         sniper_candidate_summary_csv=Path(args.sniper_candidate_summary_csv) if args.sniper_candidate_summary_csv else None,
         tdp_stale_shadow_csv=str(args.tdp_stale_shadow_csv or ""),
         structural_ts_shadow_csv=str(args.structural_ts_shadow_csv or ""),
+        pre_visible_entry_exposure_csv=str(args.pre_visible_entry_exposure_csv or ""),
+        entry_model_pre_admission_csv=str(args.entry_model_pre_admission_csv or ""),
         smoke_test=bool(args.smoke_test),
     )
     return 0

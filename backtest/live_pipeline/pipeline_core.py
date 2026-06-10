@@ -16,6 +16,7 @@ Fail-open:
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -34,6 +35,147 @@ from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
 from backtest.live.phase_router import decide_phase
 from backtest.risk.portfolio_correlation_caps import _bucket as _corr_bucket  # type: ignore
 from backtest.journal.identity import _ensure_canonical_setup_key
+
+PRE_VISIBLE_ENTRY_EXPOSURE_COLUMNS = [
+    "cycle_ts",
+    "latest_ts",
+    "symbol",
+    "model",
+    "side",
+    "timestamp",
+    "setup_created_ts",
+    "candidate_ts",
+    "structural_ts",
+    "canonical_setup_key",
+    "setup_id",
+    "entry",
+    "sl",
+    "tp",
+    "rr",
+    "candidate_source",
+    "pre_visible_reason",
+    "has_visible_ts_before_assignment",
+    "visible_ts_before_assignment",
+    "pipeline_visible_ts_before_assignment",
+    "candidate_latest_ts",
+    "trigger_refresh_candidate",
+    "trigger_refresh_reason",
+    "old_canonical_setup_key",
+    "original_setup_created_ts",
+    "raw_candidate_count",
+    "cluster_group_count",
+]
+
+
+def _pre_visible_path(path_like) -> Optional[Path]:
+    if path_like is None:
+        return None
+    path_s = str(path_like).strip()
+    if not path_s:
+        return None
+    return Path(path_s)
+
+
+def _pre_visible_get(entry, name: str, default=""):
+    if isinstance(entry, dict):
+        return entry.get(name, default)
+    return getattr(entry, name, default)
+
+
+def _pre_visible_ts(value):
+    return pd.to_datetime(value, utc=True, errors="coerce")
+
+
+def _pre_visible_structural_ts(entry):
+    for source in ("structural_ts", "setup_created_ts", "candidate_ts", "timestamp"):
+        ts = _pre_visible_ts(_pre_visible_get(entry, source, pd.NaT))
+        if pd.notna(ts):
+            return ts
+    return pd.NaT
+
+
+def _pre_visible_setup_id(symbol: str, entry) -> str:
+    existing = str(_pre_visible_get(entry, "setup_id", "") or "")
+    if existing:
+        return existing
+    ts = _pre_visible_ts(_pre_visible_get(entry, "timestamp", pd.NaT))
+    model = str(_pre_visible_get(entry, "model", "") or "")
+    side = str(_pre_visible_get(entry, "side", "") or "").upper()
+    return f"{str(symbol).upper()}|{ts}|{model}|{side}"
+
+
+def _append_pre_visible_entry_exposure_rows(
+    path_like,
+    *,
+    entries,
+    symbol: str,
+    latest_ts: pd.Timestamp,
+    cycle_ts,
+) -> None:
+    path = _pre_visible_path(path_like)
+    if path is None or not entries:
+        return
+
+    latest_ts = _pre_visible_ts(latest_ts)
+    cycle_ts = _pre_visible_ts(cycle_ts)
+    if pd.isna(cycle_ts):
+        cycle_ts = latest_ts
+
+    rows = []
+    raw_count = int(len(entries))
+    for entry in entries:
+        # Telemetry-only read/copy. Do not mutate entry dicts or Entry objects.
+        visible_before = _pre_visible_get(entry, "visible_ts", "")
+        pipeline_visible_before = _pre_visible_get(entry, "pipeline_visible_ts", "")
+        visible_ts = _pre_visible_ts(visible_before)
+        pipeline_visible_ts = _pre_visible_ts(pipeline_visible_before)
+        timestamp = _pre_visible_ts(_pre_visible_get(entry, "timestamp", pd.NaT))
+        setup_created_ts = _pre_visible_ts(_pre_visible_get(entry, "setup_created_ts", timestamp))
+        candidate_ts = _pre_visible_ts(_pre_visible_get(entry, "candidate_ts", timestamp))
+        structural_ts = _pre_visible_structural_ts(entry)
+        rows.append({
+            "cycle_ts": cycle_ts,
+            "latest_ts": latest_ts,
+            "symbol": str(_pre_visible_get(entry, "symbol", symbol) or symbol).upper(),
+            "model": str(_pre_visible_get(entry, "model", "") or ""),
+            "side": str(_pre_visible_get(entry, "side", "") or "").upper(),
+            "timestamp": timestamp,
+            "setup_created_ts": setup_created_ts,
+            "candidate_ts": candidate_ts,
+            "structural_ts": structural_ts,
+            "canonical_setup_key": str(_pre_visible_get(entry, "canonical_setup_key", "") or ""),
+            "setup_id": _pre_visible_setup_id(symbol, entry),
+            "entry": _pre_visible_get(entry, "entry", ""),
+            "sl": _pre_visible_get(entry, "sl", ""),
+            "tp": _pre_visible_get(entry, "tp", ""),
+            "rr": _pre_visible_get(entry, "rr", ""),
+            "candidate_source": "generate_entries_from_ctx",
+            "pre_visible_reason": "admitted_to_entries",
+            "has_visible_ts_before_assignment": bool(pd.notna(visible_ts) or pd.notna(pipeline_visible_ts)),
+            "visible_ts_before_assignment": visible_ts,
+            "pipeline_visible_ts_before_assignment": pipeline_visible_ts,
+            "candidate_latest_ts": _pre_visible_ts(_pre_visible_get(entry, "candidate_latest_ts", pd.NaT)),
+            "trigger_refresh_candidate": bool(_pre_visible_get(entry, "trigger_refresh_candidate", False)),
+            "trigger_refresh_reason": str(_pre_visible_get(entry, "trigger_refresh_reason", "") or ""),
+            "old_canonical_setup_key": str(_pre_visible_get(entry, "old_canonical_setup_key", "") or ""),
+            "original_setup_created_ts": _pre_visible_get(entry, "original_setup_created_ts", ""),
+            "raw_candidate_count": raw_count,
+            "cluster_group_count": "",
+        })
+
+    if not rows:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = pd.DataFrame(rows)
+    for col in PRE_VISIBLE_ENTRY_EXPOSURE_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[PRE_VISIBLE_ENTRY_EXPOSURE_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
 
 
 def _invalidate_setups_hit_tp_sl(
@@ -272,6 +414,15 @@ def run_pipeline_once(
                 except Exception:
                     pass
 
+        # Telemetry-only bridge into entry_model. Stored in DataFrame attrs so
+        # entry generation signatures and returned entries remain unchanged.
+        try:
+            ctx_df.attrs["entry_model_pre_admission_csv"] = str(ctx.get("entry_model_pre_admission_csv", "") or "")
+            ctx_df.attrs["cycle_ts"] = ctx.get("cycle_ts", ctx.get("latest_ts", pd.NaT))
+            ctx_df.attrs["latest_ts"] = latest_ts
+        except Exception:
+            pass
+
 
         entries = generate_entries_from_ctx(
             ctx_df,
@@ -286,6 +437,13 @@ def run_pipeline_once(
             symbol=str(symbol or ""),
         )
         print(f"[ENTRY_DIAG][{symbol}] raw_entries={len(entries)}")
+        _append_pre_visible_entry_exposure_rows(
+            ctx.get("pre_visible_entry_exposure_csv", ""),
+            entries=entries,
+            symbol=symbol,
+            latest_ts=latest_ts,
+            cycle_ts=ctx.get("cycle_ts", latest_ts),
+        )
 
         _write_candidate_pressure_row(
             entries=entries,

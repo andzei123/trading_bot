@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, List, Dict
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -33,6 +34,166 @@ def _entry_diag_bump(ctx: pd.DataFrame, reason: str, n: int = 1) -> None:
             d = {}
             ctx.attrs["_entry_diag"] = d
         d[reason] = int(d.get(reason, 0)) + int(n)
+    except Exception:
+        return
+
+
+ENTRY_MODEL_PRE_ADMISSION_COLUMNS = [
+    "cycle_ts",
+    "latest_ts",
+    "symbol",
+    "model",
+    "side",
+    "candidate_stage",
+    "candidate_reason",
+    "timestamp",
+    "setup_created_ts",
+    "candidate_ts",
+    "structural_ts",
+    "canonical_setup_key",
+    "setup_id",
+    "entry",
+    "sl",
+    "tp",
+    "rr",
+    "range_high",
+    "range_low",
+    "range_mid",
+    "range_width_pct",
+    "range_retest_score",
+    "candidate_latest_ts",
+    "trigger_refresh_candidate",
+    "trigger_refresh_reason",
+    "old_canonical_setup_key",
+    "original_setup_created_ts",
+    "is_candidate_created",
+    "is_candidate_returned",
+    "is_candidate_rejected",
+    "reject_reason",
+    "raw_candidate_count",
+    "cluster_group_count",
+]
+
+
+def _entry_model_pre_attr(ctx: Optional[pd.DataFrame], name: str, default=""):
+    try:
+        if ctx is not None and hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
+            return ctx.attrs.get(name, default)
+    except Exception:
+        pass
+    return default
+
+
+def _entry_model_pre_path(ctx: Optional[pd.DataFrame]) -> Optional[Path]:
+    path_like = _entry_model_pre_attr(ctx, "entry_model_pre_admission_csv", "")
+    if path_like is None:
+        return None
+    path_s = str(path_like).strip()
+    if not path_s:
+        return None
+    return Path(path_s)
+
+
+def _entry_model_pre_ts(value):
+    return pd.to_datetime(value, utc=True, errors="coerce")
+
+
+def _entry_model_pre_setup_id(symbol: str, ts_value, model: str, side: str) -> str:
+    ts = _entry_model_pre_ts(ts_value)
+    return f"{str(symbol).upper()}|{ts}|{str(model)}|{str(side).upper()}"
+
+
+def _entry_model_pre_append(
+    ctx: Optional[pd.DataFrame],
+    *,
+    symbol: str,
+    candidate_stage: str,
+    candidate_reason: str,
+    timestamp,
+    entry="",
+    sl="",
+    tp="",
+    rr="",
+    range_high="",
+    range_low="",
+    range_mid="",
+    range_width_pct="",
+    range_retest_score="",
+    reject_reason="",
+    raw_candidate_count="",
+    cluster_group_count="",
+    is_candidate_created: bool = False,
+    is_candidate_returned: bool = False,
+    is_candidate_rejected: bool = False,
+) -> None:
+    """Append-only RANGE_TOP_SHORT_V2 entry-model telemetry."""
+    path = _entry_model_pre_path(ctx)
+    if path is None:
+        return
+
+    model = "RANGE_TOP_SHORT_V2"
+    side = "SHORT"
+    ts = _entry_model_pre_ts(timestamp)
+    cycle_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "cycle_ts", pd.NaT))
+    latest_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "latest_ts", pd.NaT))
+    if pd.isna(cycle_ts):
+        cycle_ts = latest_ts
+
+    try:
+        if range_width_pct == "" and range_high != "" and range_low != "" and entry not in ("", None):
+            entry_f = float(entry)
+            if entry_f != 0:
+                range_width_pct = abs(float(range_high) - float(range_low)) / abs(entry_f)
+    except Exception:
+        pass
+
+    row = {
+        "cycle_ts": cycle_ts,
+        "latest_ts": latest_ts,
+        "symbol": str(symbol or "").upper(),
+        "model": model,
+        "side": side,
+        "candidate_stage": str(candidate_stage or ""),
+        "candidate_reason": str(candidate_reason or ""),
+        "timestamp": ts,
+        "setup_created_ts": ts,
+        "candidate_ts": ts,
+        "structural_ts": ts,
+        "canonical_setup_key": "",
+        "setup_id": _entry_model_pre_setup_id(symbol, ts, model, side),
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "rr": rr,
+        "range_high": range_high,
+        "range_low": range_low,
+        "range_mid": range_mid,
+        "range_width_pct": range_width_pct,
+        "range_retest_score": range_retest_score,
+        "candidate_latest_ts": latest_ts,
+        "trigger_refresh_candidate": False,
+        "trigger_refresh_reason": "",
+        "old_canonical_setup_key": "",
+        "original_setup_created_ts": "",
+        "is_candidate_created": bool(is_candidate_created),
+        "is_candidate_returned": bool(is_candidate_returned),
+        "is_candidate_rejected": bool(is_candidate_rejected),
+        "reject_reason": str(reject_reason or ""),
+        "raw_candidate_count": raw_candidate_count,
+        "cluster_group_count": cluster_group_count,
+    }
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out = pd.DataFrame([row])
+        for col in ENTRY_MODEL_PRE_ADMISSION_COLUMNS:
+            if col not in out.columns:
+                out[col] = ""
+        out = out[ENTRY_MODEL_PRE_ADMISSION_COLUMNS]
+        if not path.exists() or path.stat().st_size == 0:
+            out.to_csv(path, index=False)
+        else:
+            out.to_csv(path, mode="a", header=False, index=False)
     except Exception:
         return
 
@@ -838,6 +999,18 @@ def _generate_range_top_short_v2(
         if not bool(width_ok.iloc[i]):
             if debug_entry_filters:
                 print(f"{tag} RANGE_WIDTH_TOO_SMALL idx={i}")
+            _entry_model_pre_append(
+                diag_ctx,
+                symbol=symbol,
+                candidate_stage="range_candidate_rejected",
+                candidate_reason="range_width_gate",
+                timestamp=c.loc[i, "timestamp"],
+                range_high=c.loc[i, "range_hi"],
+                range_low=c.loc[i, "range_lo"],
+                range_mid=(float(c.loc[i, "range_hi"]) + float(c.loc[i, "range_lo"])) / 2.0,
+                reject_reason="RANGE_WIDTH_TOO_SMALL",
+                is_candidate_rejected=True,
+            )
             i += 1
             continue
 
@@ -849,6 +1022,16 @@ def _generate_range_top_short_v2(
         if float(c.loc[i, "high"]) <= dev_up_level:
             i += 1
             continue
+        _entry_model_pre_append(
+            diag_ctx,
+            symbol=symbol,
+            candidate_stage="range_candidate_considered",
+            candidate_reason="sweep_detected",
+            timestamp=c.loc[i, "timestamp"],
+            range_high=hi_i,
+            range_low=c.loc[i, "range_lo"],
+            range_mid=(float(hi_i) + float(c.loc[i, "range_lo"])) / 2.0,
+        )
 
         # reclaim search
         j_reclaim = None
@@ -876,6 +1059,18 @@ def _generate_range_top_short_v2(
                     f"reason=NO_RECLAIM"
                 )
                 print(f"{tag} RANGE_TOP_NO_RECLAIM idx={i} lookahead={reclaim_lookahead}")
+            _entry_model_pre_append(
+                diag_ctx,
+                symbol=symbol,
+                candidate_stage="range_candidate_rejected",
+                candidate_reason="no_reclaim_after_sweep",
+                timestamp=c.loc[i, "timestamp"],
+                range_high=c.loc[i, "range_hi"],
+                range_low=c.loc[i, "range_lo"],
+                range_mid=(float(c.loc[i, "range_hi"]) + float(c.loc[i, "range_lo"])) / 2.0,
+                reject_reason="NO_RECLAIM",
+                is_candidate_rejected=True,
+            )
             i += 1
             continue
 
@@ -902,6 +1097,19 @@ def _generate_range_top_short_v2(
                             f"sub_label=RANGE_TOP_SHORT "
                             f"reason=RR_TOO_LOW"
                         )
+                    _entry_model_pre_append(
+                        diag_ctx,
+                        symbol=symbol,
+                        candidate_stage="range_candidate_rejected",
+                        candidate_reason="retest_found_but_rr_too_low",
+                        timestamp=c.loc[k, "timestamp"],
+                        entry=close_k,
+                        range_high=hi_k,
+                        range_low=c.loc[k, "range_lo"],
+                        range_mid=mid_k,
+                        reject_reason="RR_TOO_LOW",
+                        is_candidate_rejected=True,
+                    )
                     continue
                 k_entry = k
                 break
@@ -917,6 +1125,18 @@ def _generate_range_top_short_v2(
                     f"reason=RETEST_FAIL"
                 )
                 print(f"{tag} RANGE_TOP_NO_RETEST idx={i} reclaim_idx={j_reclaim} lookahead={retest_lookahead}")
+            _entry_model_pre_append(
+                diag_ctx,
+                symbol=symbol,
+                candidate_stage="range_candidate_rejected",
+                candidate_reason="no_retest_after_reclaim",
+                timestamp=c.loc[i, "timestamp"],
+                range_high=c.loc[i, "range_hi"],
+                range_low=c.loc[i, "range_lo"],
+                range_mid=(float(c.loc[i, "range_hi"]) + float(c.loc[i, "range_lo"])) / 2.0,
+                reject_reason="RETEST_FAIL",
+                is_candidate_rejected=True,
+            )
             i += 1
             continue
 
@@ -936,6 +1156,21 @@ def _generate_range_top_short_v2(
                     f"sub_label=RANGE_TOP_SHORT "
                     f"reason=SL_INVALID"
                 )
+            _entry_model_pre_append(
+                diag_ctx,
+                symbol=symbol,
+                candidate_stage="range_candidate_rejected",
+                candidate_reason="invalid_sl_tp_geometry",
+                timestamp=c.loc[k_entry, "timestamp"],
+                entry=entry_px,
+                sl=sl,
+                tp=tp,
+                range_high=c.loc[k_entry, "range_hi"],
+                range_low=c.loc[k_entry, "range_lo"],
+                range_mid=mid_k,
+                reject_reason="SL_INVALID",
+                is_candidate_rejected=True,
+            )
             i = k_entry + 1
             continue
 
@@ -943,6 +1178,23 @@ def _generate_range_top_short_v2(
         if risk <= 0:
             i = k_entry + 1
             continue
+        rr_calc = abs(tp - entry_px) / max(1e-9, risk)
+        _entry_model_pre_append(
+            diag_ctx,
+            symbol=symbol,
+            candidate_stage="range_candidate_created",
+            candidate_reason="sweep_reclaim_retest_valid",
+            timestamp=c.loc[k_entry, "timestamp"],
+            entry=entry_px,
+            sl=sl,
+            tp=tp,
+            rr=rr_calc,
+            range_high=c.loc[k_entry, "range_hi"],
+            range_low=c.loc[k_entry, "range_lo"],
+            range_mid=mid_k,
+            raw_candidate_count=len(entries) + 1,
+            is_candidate_created=True,
+        )
 
         entries.append(
             Entry(
@@ -1047,6 +1299,21 @@ def generate_range_entries(
     )
 
     # lock: ensure router guarantees are never violated
+    for e in out:
+        _entry_model_pre_append(
+            ctx,
+            symbol=symbol,
+            candidate_stage="range_candidate_returned",
+            candidate_reason="returned_by_generate_range_entries",
+            timestamp=getattr(e, "timestamp", pd.NaT),
+            entry=getattr(e, "entry", ""),
+            sl=getattr(e, "sl", ""),
+            tp=getattr(e, "tp", ""),
+            rr=getattr(e, "rr", ""),
+            raw_candidate_count=len(out),
+            is_candidate_returned=True,
+        )
+
     for e in out:
         if str(getattr(e, "model", "")) != "RANGE_TOP_SHORT_V2":
             raise AssertionError(f"RANGE router lock violated: model={getattr(e, 'model', None)}")
