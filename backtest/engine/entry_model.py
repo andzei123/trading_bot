@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Set
 from pathlib import Path
 import logging
 
@@ -72,7 +72,14 @@ ENTRY_MODEL_PRE_ADMISSION_COLUMNS = [
     "reject_reason",
     "raw_candidate_count",
     "cluster_group_count",
+    "identity_key",
+    "first_time_seen_identity",
+    "already_seen_identity",
+    "ctx_first_ts",
+    "ctx_last_ts",
 ]
+
+ENTRY_MODEL_PRE_SEEN_IDENTITIES: Set[str] = set()
 
 
 def _entry_model_pre_attr(ctx: Optional[pd.DataFrame], name: str, default=""):
@@ -101,6 +108,36 @@ def _entry_model_pre_ts(value):
 def _entry_model_pre_setup_id(symbol: str, ts_value, model: str, side: str) -> str:
     ts = _entry_model_pre_ts(ts_value)
     return f"{str(symbol).upper()}|{ts}|{str(model)}|{str(side).upper()}"
+
+
+def _entry_model_pre_identity_key(symbol: str, ts_value, model: str, side: str) -> str:
+    ts = _entry_model_pre_ts(ts_value)
+    return f"{str(symbol).upper()}|{str(model)}|{str(side).upper()}|{ts}"
+
+
+def _entry_model_pre_ctx_bounds(ctx: Optional[pd.DataFrame]):
+    ctx_first_ts = pd.NaT
+    ctx_last_ts = pd.NaT
+    try:
+        if ctx is not None and isinstance(ctx, pd.DataFrame) and (not ctx.empty) and "timestamp" in ctx.columns:
+            ts = pd.to_datetime(ctx["timestamp"], utc=True, errors="coerce").dropna()
+            if not ts.empty:
+                ctx_first_ts = ts.min()
+                ctx_last_ts = ts.max()
+    except Exception:
+        pass
+    return ctx_first_ts, ctx_last_ts
+
+
+def _entry_model_pre_identity_flags(identity_key: str):
+    already_seen = bool(identity_key and identity_key in ENTRY_MODEL_PRE_SEEN_IDENTITIES)
+    first_seen = bool(identity_key and not already_seen)
+    if identity_key:
+        try:
+            ENTRY_MODEL_PRE_SEEN_IDENTITIES.add(identity_key)
+        except Exception:
+            pass
+    return first_seen, already_seen
 
 
 def _entry_model_pre_append(
@@ -147,6 +184,10 @@ def _entry_model_pre_append(
     except Exception:
         pass
 
+    identity_key = _entry_model_pre_identity_key(symbol, ts, model, side)
+    first_time_seen_identity, already_seen_identity = _entry_model_pre_identity_flags(identity_key)
+    ctx_first_ts, ctx_last_ts = _entry_model_pre_ctx_bounds(ctx)
+
     row = {
         "cycle_ts": cycle_ts,
         "latest_ts": latest_ts,
@@ -181,6 +222,11 @@ def _entry_model_pre_append(
         "reject_reason": str(reject_reason or ""),
         "raw_candidate_count": raw_candidate_count,
         "cluster_group_count": cluster_group_count,
+        "identity_key": identity_key,
+        "first_time_seen_identity": bool(first_time_seen_identity),
+        "already_seen_identity": bool(already_seen_identity),
+        "ctx_first_ts": ctx_first_ts,
+        "ctx_last_ts": ctx_last_ts,
     }
 
     try:
