@@ -144,6 +144,8 @@ def _entry_model_pre_append(
     ctx: Optional[pd.DataFrame],
     *,
     symbol: str,
+    model: str = "RANGE_TOP_SHORT_V2",
+    side: str = "SHORT",
     candidate_stage: str,
     candidate_reason: str,
     timestamp,
@@ -168,8 +170,8 @@ def _entry_model_pre_append(
     if path is None:
         return
 
-    model = "RANGE_TOP_SHORT_V2"
-    side = "SHORT"
+    model = str(model or "RANGE_TOP_SHORT_V2")
+    side = str(side or "SHORT").upper()
     ts = _entry_model_pre_ts(timestamp)
     cycle_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "cycle_ts", pd.NaT))
     latest_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "latest_ts", pd.NaT))
@@ -678,6 +680,64 @@ def generate_trend_entries(
         else:
             print(f"{tag} {reason}")
 
+    def _tdp_pre_append(
+        *,
+        side: str,
+        candidate_stage: str,
+        candidate_reason: str,
+        timestamp,
+        entry="",
+        sl="",
+        tp="",
+        rr_value="",
+        reject_reason="",
+        is_candidate_created: bool = False,
+        is_candidate_returned: bool = False,
+        is_candidate_rejected: bool = False,
+        raw_candidate_count="",
+    ) -> None:
+        _entry_model_pre_append(
+            ctx,
+            symbol=symbol,
+            model="TDP_REENTRY",
+            side=side,
+            candidate_stage=candidate_stage,
+            candidate_reason=candidate_reason,
+            timestamp=timestamp,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            rr=rr_value,
+            range_high="",
+            range_low="",
+            range_mid="",
+            range_width_pct="",
+            range_retest_score="",
+            reject_reason=reject_reason,
+            raw_candidate_count=raw_candidate_count,
+            cluster_group_count="",
+            is_candidate_created=is_candidate_created,
+            is_candidate_returned=is_candidate_returned,
+            is_candidate_rejected=is_candidate_rejected,
+        )
+
+    def _tdp_log_returned_since(start_idx: int) -> None:
+        for e in entries[start_idx:]:
+            if str(getattr(e, "model", "") or "") != "TDP_REENTRY":
+                continue
+            _tdp_pre_append(
+                side=str(getattr(e, "side", "") or "").upper(),
+                candidate_stage="tdp_candidate_returned",
+                candidate_reason="returned_by_generate_trend_entries",
+                timestamp=getattr(e, "timestamp", pd.NaT),
+                entry=getattr(e, "entry", ""),
+                sl=getattr(e, "sl", ""),
+                tp=getattr(e, "tp", ""),
+                rr_value=getattr(e, "rr", ""),
+                is_candidate_returned=True,
+                raw_candidate_count=len(entries),
+            )
+
     recent_high = c["high"].rolling(tdp_dev_lookback).max()
     recent_low = c["low"].rolling(tdp_dev_lookback).min()
 
@@ -754,6 +814,18 @@ def generate_trend_entries(
             continue
         risk = max(1e-9, risk0)
         tp = entry_px - rr * risk
+        _tdp_pre_append(
+            side="SHORT",
+            candidate_stage="tdp_candidate_created",
+            candidate_reason="tdp_short_reentry_valid",
+            timestamp=c.loc[i, "timestamp"],
+            entry=entry_px,
+            sl=sl,
+            tp=tp,
+            rr_value=rr,
+            is_candidate_created=True,
+            raw_candidate_count=len(entries) + 1,
+        )
 
         entries.append(Entry(
             timestamp=pd.Timestamp(c.loc[i, "timestamp"]),
@@ -876,6 +948,18 @@ def generate_trend_entries(
             continue
         risk = max(1e-9, risk0)
         tp = entry_px + rr_long * risk
+        _tdp_pre_append(
+            side="LONG",
+            candidate_stage="tdp_candidate_created",
+            candidate_reason="tdp_long_reentry_valid",
+            timestamp=c.loc[j, "timestamp"],
+            entry=entry_px,
+            sl=sl,
+            tp=tp,
+            rr_value=rr_long,
+            is_candidate_created=True,
+            raw_candidate_count=len(entries) + 1,
+        )
 
         entries.append(Entry(
             timestamp=pd.Timestamp(c.loc[j, "timestamp"]),
@@ -893,6 +977,8 @@ def generate_trend_entries(
             atr_pct=float(c.loc[j, "atr_pct"]),
             phase=str(c.loc[j, "phase"]),
         ))
+
+    _tdp_log_returned_since(0)
 
 
     # ============================================================
