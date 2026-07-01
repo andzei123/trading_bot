@@ -82,6 +82,272 @@ ENTRY_MODEL_PRE_ADMISSION_COLUMNS = [
 ENTRY_MODEL_PRE_SEEN_IDENTITIES: Set[str] = set()
 
 
+TDP_DISAPPEARANCE_TRACE_COLUMNS = [
+    "cycle_ts",
+    "latest_ts",
+    "symbol",
+    "model",
+    "side",
+    "identity_key",
+    "timestamp",
+    "setup_created_ts",
+    "candidate_ts",
+    "candidate_stage",
+    "candidate_accept_reason",
+    "candidate_reject_reason",
+    "first_time_seen_identity",
+    "already_seen_identity",
+    "ctx_first_ts",
+    "ctx_last_ts",
+    "phase",
+    "sub_label",
+    "impulse_recent",
+    "impulse_dir",
+    "dev_up_recent",
+    "dev_dn_recent",
+    "sweep",
+    "future_reclaim",
+    "had_imp_down",
+    "entry",
+    "sl",
+    "tp",
+    "risk0",
+]
+
+
+
+TDP_TRUE_BIRTH_SEEN_KEYS: Set[str] = set()
+
+TDP_TRUE_BIRTH_TRACE_COLUMNS = [
+    "cycle_ts",
+    "latest_ts",
+    "symbol",
+    "model",
+    "side",
+    "tdp_true_birth_ts",
+    "tdp_true_birth_reason",
+    "tdp_true_birth_source",
+    "structural_origin_ts",
+    "candidate_ts",
+    "identity_key",
+    "setup_id",
+    "phase",
+    "sub_label",
+    "impulse_recent",
+    "impulse_dir",
+    "dev_up_recent",
+    "dev_dn_recent",
+    "sweep",
+    "future_reclaim",
+    "had_imp_down",
+    "entry",
+    "sl",
+    "tp",
+    "risk0",
+]
+
+
+def _tdp_true_birth_path(ctx: Optional[pd.DataFrame]) -> Optional[Path]:
+    path_like = _entry_model_pre_attr(ctx, "tdp_true_birth_trace_csv", "")
+    if path_like is None:
+        return None
+    path_s = str(path_like).strip()
+    if not path_s:
+        return None
+    return Path(path_s)
+
+
+def _tdp_true_birth_append(
+    ctx: Optional[pd.DataFrame],
+    *,
+    symbol: str,
+    side: str,
+    timestamp,
+    reason: str,
+    source: str,
+    phase="",
+    sub_label="",
+    impulse_recent="",
+    impulse_dir="",
+    dev_up_recent="",
+    dev_dn_recent="",
+    sweep="",
+    future_reclaim="",
+    had_imp_down="",
+    entry="",
+    sl="",
+    tp="",
+    risk0="",
+) -> None:
+    """Append-only TDP true-birth trace.
+
+    Telemetry only. Does not change candidate conditions, entries, ranking,
+    wait, stale, visibility, idempotency, position gate, or execution.
+    """
+    path = _tdp_true_birth_path(ctx)
+    if path is None:
+        return
+
+    side = str(side or "").upper()
+    ts = _entry_model_pre_ts(timestamp)
+    cycle_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "cycle_ts", pd.NaT))
+    latest_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "latest_ts", pd.NaT))
+    if pd.isna(cycle_ts):
+        cycle_ts = latest_ts
+
+    identity_key = _entry_model_pre_identity_key(symbol, ts, "TDP_REENTRY", side)
+
+    # Telemetry-only dedupe: record only the first time this TDP birth identity
+    # is observed during the replay/live process. Do not affect candidate logic.
+    true_birth_key = str(identity_key or "")
+    if true_birth_key:
+        try:
+            if true_birth_key in TDP_TRUE_BIRTH_SEEN_KEYS:
+                return
+            TDP_TRUE_BIRTH_SEEN_KEYS.add(true_birth_key)
+        except Exception:
+            pass
+    row = {
+        "cycle_ts": cycle_ts,
+        "latest_ts": latest_ts,
+        "symbol": str(symbol or "").upper(),
+        "model": "TDP_REENTRY",
+        "side": side,
+        "tdp_true_birth_ts": ts,
+        "tdp_true_birth_reason": str(reason or ""),
+        "tdp_true_birth_source": str(source or ""),
+        "structural_origin_ts": ts,
+        "candidate_ts": ts,
+        "identity_key": identity_key,
+        "setup_id": _entry_model_pre_setup_id(symbol, ts, "TDP_REENTRY", side),
+        "phase": phase,
+        "sub_label": sub_label,
+        "impulse_recent": impulse_recent,
+        "impulse_dir": impulse_dir,
+        "dev_up_recent": dev_up_recent,
+        "dev_dn_recent": dev_dn_recent,
+        "sweep": sweep,
+        "future_reclaim": future_reclaim,
+        "had_imp_down": had_imp_down,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "risk0": risk0,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out = pd.DataFrame([row])
+        for col in TDP_TRUE_BIRTH_TRACE_COLUMNS:
+            if col not in out.columns:
+                out[col] = ""
+        out = out[TDP_TRUE_BIRTH_TRACE_COLUMNS]
+        if not path.exists() or path.stat().st_size == 0:
+            out.to_csv(path, index=False)
+        else:
+            out.to_csv(path, mode="a", header=False, index=False)
+    except Exception:
+        return
+
+def _tdp_disappearance_path(ctx: Optional[pd.DataFrame]) -> Optional[Path]:
+    path_like = _entry_model_pre_attr(ctx, "tdp_disappearance_trace_csv", "")
+    if path_like is None:
+        return None
+    path_s = str(path_like).strip()
+    if not path_s:
+        return None
+    return Path(path_s)
+
+
+def _tdp_disappearance_append(
+    ctx: Optional[pd.DataFrame],
+    *,
+    symbol: str,
+    side: str,
+    timestamp,
+    candidate_stage: str,
+    candidate_accept_reason: str = "",
+    candidate_reject_reason: str = "",
+    phase="",
+    sub_label="",
+    impulse_recent="",
+    impulse_dir="",
+    dev_up_recent="",
+    dev_dn_recent="",
+    sweep="",
+    future_reclaim="",
+    had_imp_down="",
+    entry="",
+    sl="",
+    tp="",
+    risk0="",
+) -> None:
+    """Append-only TDP disappearance / reject trace.
+
+    Telemetry only. Does not change candidate conditions, entries, ranking,
+    wait, stale, visibility, idempotency, position gate, or execution.
+    """
+    path = _tdp_disappearance_path(ctx)
+    if path is None:
+        return
+
+    side = str(side or "").upper()
+    ts = _entry_model_pre_ts(timestamp)
+    cycle_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "cycle_ts", pd.NaT))
+    latest_ts = _entry_model_pre_ts(_entry_model_pre_attr(ctx, "latest_ts", pd.NaT))
+    if pd.isna(cycle_ts):
+        cycle_ts = latest_ts
+
+    identity_key = _entry_model_pre_identity_key(symbol, ts, "TDP_REENTRY", side)
+    first_time_seen_identity, already_seen_identity = _entry_model_pre_identity_flags(identity_key)
+    ctx_first_ts, ctx_last_ts = _entry_model_pre_ctx_bounds(ctx)
+
+    row = {
+        "cycle_ts": cycle_ts,
+        "latest_ts": latest_ts,
+        "symbol": str(symbol or "").upper(),
+        "model": "TDP_REENTRY",
+        "side": side,
+        "identity_key": identity_key,
+        "timestamp": ts,
+        "setup_created_ts": ts,
+        "candidate_ts": ts,
+        "candidate_stage": str(candidate_stage or ""),
+        "candidate_accept_reason": str(candidate_accept_reason or ""),
+        "candidate_reject_reason": str(candidate_reject_reason or ""),
+        "first_time_seen_identity": bool(first_time_seen_identity),
+        "already_seen_identity": bool(already_seen_identity),
+        "ctx_first_ts": ctx_first_ts,
+        "ctx_last_ts": ctx_last_ts,
+        "phase": phase,
+        "sub_label": sub_label,
+        "impulse_recent": impulse_recent,
+        "impulse_dir": impulse_dir,
+        "dev_up_recent": dev_up_recent,
+        "dev_dn_recent": dev_dn_recent,
+        "sweep": sweep,
+        "future_reclaim": future_reclaim,
+        "had_imp_down": had_imp_down,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "risk0": risk0,
+    }
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out = pd.DataFrame([row])
+        for col in TDP_DISAPPEARANCE_TRACE_COLUMNS:
+            if col not in out.columns:
+                out[col] = ""
+        out = out[TDP_DISAPPEARANCE_TRACE_COLUMNS]
+        if not path.exists() or path.stat().st_size == 0:
+            out.to_csv(path, index=False)
+        else:
+            out.to_csv(path, mode="a", header=False, index=False)
+    except Exception:
+        return
+
+
 def _entry_model_pre_attr(ctx: Optional[pd.DataFrame], name: str, default=""):
     try:
         if ctx is not None and hasattr(ctx, "attrs") and isinstance(ctx.attrs, dict):
@@ -773,6 +1039,58 @@ def generate_trend_entries(
     if require_impulse_before_tdp:
         reentry_short &= c["impulse_recent"] & (c["impulse_dir"] == "UP")
 
+    # Telemetry-only: candidates that satisfied base TDP SHORT structure but
+    # were removed by the optional impulse gate.
+    try:
+        removed_short = (base_short & (~reentry_short)).fillna(False)
+        for j in np.where(removed_short.values)[0]:
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="SHORT",
+                timestamp=c.loc[j, "timestamp"],
+                candidate_stage="tdp_short_candidate_rejected",
+                candidate_reject_reason="IMPULSE_TOO_SMALL",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_up_recent=bool(dev_up_recent.iloc[j]),
+            )
+    except Exception:
+        pass
+
+    try:
+        for j in np.where(reentry_short.values)[0]:
+            _tdp_true_birth_append(
+                ctx,
+                symbol=symbol,
+                side="SHORT",
+                timestamp=c.loc[j, "timestamp"],
+                reason="tdp_short_reentry_mask_true",
+                source="generate_trend_entries.reentry_short_mask",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_up_recent=bool(dev_up_recent.iloc[j]),
+            )  # true_birth: tdp_short_reentry_mask_true
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="SHORT",
+                timestamp=c.loc[j, "timestamp"],
+                candidate_stage="tdp_short_candidate_accepted",
+                candidate_accept_reason="tdp_short_reentry_mask_true",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_up_recent=bool(dev_up_recent.iloc[j]),
+            )
+    except Exception:
+        pass
+
     # ENTRY_DIAG: impulse gate removed candidates
     if debug_entry_filters:
         try:
@@ -802,6 +1120,22 @@ def generate_trend_entries(
         sl = float(recent_high.loc[i] + sl_atr_buffer * atr)
         risk0 = float(sl - entry_px)
         if (not np.isfinite(risk0)) or (risk0 <= 0):
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="SHORT",
+                timestamp=c.loc[i, "timestamp"],
+                candidate_stage="tdp_short_candidate_rejected",
+                candidate_reject_reason="SL_INVALID",
+                phase=str(c.loc[i, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[i, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[i, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[i, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_up_recent=bool(dev_up_recent.iloc[i]),
+                entry=entry_px,
+                sl=sl,
+                risk0=risk0,
+            )
             if debug_entry_filters:
                 _entry_diag_bump(ctx, "SL_INVALID", 1)
                 print(
@@ -892,6 +1226,66 @@ def generate_trend_entries(
         reentry_long &= had_imp_down
     else:
         had_imp_down = pd.Series(True, index=c.index)
+
+    # Telemetry-only: TDP LONG base structures that were removed by impulse.
+    try:
+        removed_long = (base_long & (~reentry_long)).fillna(False)
+        for j in np.where(removed_long.values)[0]:
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="LONG",
+                timestamp=c.loc[j, "timestamp"],
+                candidate_stage="tdp_long_candidate_rejected",
+                candidate_reject_reason="IMPULSE_TOO_SMALL",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_dn_recent=bool(dev_dn_recent.iloc[j]),
+                sweep=bool(sweep.iloc[j]),
+                future_reclaim=bool(future_reclaim.iloc[j]),
+                had_imp_down=bool(had_imp_down.iloc[j]),
+            )
+    except Exception:
+        pass
+
+    try:
+        for j in np.where(reentry_long.values)[0]:
+            _tdp_true_birth_append(
+                ctx,
+                symbol=symbol,
+                side="LONG",
+                timestamp=c.loc[j, "timestamp"],
+                reason="tdp_long_reentry_mask_true",
+                source="generate_trend_entries.reentry_long_mask",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_dn_recent=bool(dev_dn_recent.iloc[j]),
+                sweep=bool(sweep.iloc[j]),
+                future_reclaim=bool(future_reclaim.iloc[j]),
+                had_imp_down=bool(had_imp_down.iloc[j]),
+            )  # true_birth: tdp_long_reentry_mask_true
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="LONG",
+                timestamp=c.loc[j, "timestamp"],
+                candidate_stage="tdp_long_candidate_accepted",
+                candidate_accept_reason="tdp_long_reentry_mask_true",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_dn_recent=bool(dev_dn_recent.iloc[j]),
+                sweep=bool(sweep.iloc[j]),
+                future_reclaim=bool(future_reclaim.iloc[j]),
+                had_imp_down=bool(had_imp_down.iloc[j]),
+            )
+    except Exception:
+        pass
     # ENTRY_DIAG: impulse gate removed candidates
     if debug_entry_filters:
         try:
@@ -926,6 +1320,22 @@ def generate_trend_entries(
         j_end = min(len(c) - 1, i + reclaim_lookahead - 1)
         reclaim_window = reclaim.iloc[i:j_end + 1]
         if not reclaim_window.any():
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="LONG",
+                timestamp=c.loc[i, "timestamp"],
+                candidate_stage="tdp_long_candidate_rejected",
+                candidate_reject_reason="NO_RECLAIM_WINDOW",
+                phase=str(c.loc[i, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[i, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[i, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[i, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_dn_recent=bool(dev_dn_recent.iloc[i]),
+                sweep=bool(sweep.iloc[i]),
+                future_reclaim=bool(future_reclaim.iloc[i]),
+                had_imp_down=bool(had_imp_down.iloc[i]),
+            )
             continue
 
         j = int(reclaim_window.idxmax())
@@ -936,6 +1346,25 @@ def generate_trend_entries(
         sl = float(base_low - sl_atr_buffer * atr)
         risk0 = float(entry_px - sl)
         if (not np.isfinite(risk0)) or (risk0 <= 0):
+            _tdp_disappearance_append(
+                ctx,
+                symbol=symbol,
+                side="LONG",
+                timestamp=c.loc[j, "timestamp"],
+                candidate_stage="tdp_long_candidate_rejected",
+                candidate_reject_reason="SL_INVALID",
+                phase=str(c.loc[j, "phase"]) if "phase" in c.columns else "",
+                sub_label=str(c.loc[j, "sub_label"]) if "sub_label" in c.columns else "",
+                impulse_recent=bool(c.loc[j, "impulse_recent"]) if "impulse_recent" in c.columns else "",
+                impulse_dir=str(c.loc[j, "impulse_dir"]) if "impulse_dir" in c.columns else "",
+                dev_dn_recent=bool(dev_dn_recent.iloc[j]),
+                sweep=bool(sweep.iloc[j]),
+                future_reclaim=bool(future_reclaim.iloc[j]),
+                had_imp_down=bool(had_imp_down.iloc[j]),
+                entry=entry_px,
+                sl=sl,
+                risk0=risk0,
+            )
             if debug_entry_filters:
                 _entry_diag_bump(ctx, "SL_INVALID", 1)
                 print(

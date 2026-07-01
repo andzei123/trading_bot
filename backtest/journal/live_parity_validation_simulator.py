@@ -99,6 +99,11 @@ PRIMARY_OUTPUT_SPECS: Dict[str, List[str]] = {
     "structural_ts_shadow_oos.csv": [],
     "pre_visible_entry_exposure.csv": [],
     "entry_model_pre_admission.csv": [],
+    "tdp_visible_assignment_trace.csv": [],
+    "tdp_identity_resurfacing_trace.csv": [],
+    "tdp_disappearance_trace.csv": [],
+    "tdp_true_birth_trace.csv": [],
+    "parity_filter_diagnostics.csv": [],
 }
 
 FLOW_PARITY_COLUMNS = [
@@ -281,10 +286,13 @@ def _verify_run_symbol_once_signature(shell: ModuleType) -> List[str]:
         "debug",
         "debug_force_entries",
         "use_wait_confirmation",
+        "tdp_wait_off_only",
         "candidate_pressure_csv",
         "cluster_score_mode",
         "cluster_max_per_group",
         "cluster_rank_signal_score",
+        "cluster_score_shadow_v2",
+        "cluster_score_shadow_v2_csv",
         "rr",
         "sl_atr_buffer",
         "require_impulse_before_tdp",
@@ -300,6 +308,15 @@ def _verify_run_symbol_once_signature(shell: ModuleType) -> List[str]:
         "structural_ts_shadow_csv",
         "pre_visible_entry_exposure_csv",
         "entry_model_pre_admission_csv",
+        "tdp_visible_assignment_trace_csv",
+        "tdp_identity_resurfacing_trace_csv",
+        "tdp_disappearance_trace_csv",
+        "tdp_true_birth_trace_csv",
+        "parity_filter_mode",
+        "parity_filter_diagnostics_csv",
+        "opportunity_manager_snapshot_csv",
+        "parity_range_width_pct_min",
+        "parity_distance_to_entry_R_min",
     ]
     missing = [p for p in required if p not in params]
     if missing:
@@ -481,10 +498,13 @@ def run_live_parity_replay(
     debug: bool,
     debug_force_entries: bool,
     use_wait_confirmation: bool,
+    tdp_wait_off_only: bool,
     candidate_pressure_csv: str,
     cluster_score_mode: Optional[str],
     cluster_max_per_group: Optional[int],
     cluster_rank_signal_score: bool,
+    cluster_score_shadow_v2: bool,
+    cluster_score_shadow_v2_csv: str,
     rr: float,
     sl_atr_buffer: float,
     require_impulse_before_tdp: bool,
@@ -500,6 +520,15 @@ def run_live_parity_replay(
     structural_ts_shadow_csv: str,
     pre_visible_entry_exposure_csv: str,
     entry_model_pre_admission_csv: str,
+    tdp_visible_assignment_trace_csv: str,
+    tdp_identity_resurfacing_trace_csv: str,
+    tdp_disappearance_trace_csv: str,
+    tdp_true_birth_trace_csv: str,
+    parity_filter_mode: str,
+    parity_filter_diagnostics_csv: str,
+    opportunity_manager_snapshot_csv: str,
+    parity_range_width_pct_min: float,
+    parity_distance_to_entry_R_min: float,
     smoke_test: bool,
 ) -> None:
     shell = _load_shell_module(live_shell_py)
@@ -559,8 +588,34 @@ def run_live_parity_replay(
         Path(entry_model_pre_admission_csv) if entry_model_pre_admission_csv else (out_dir / "entry_model_pre_admission.csv"),
         PRIMARY_OUTPUT_SPECS["entry_model_pre_admission.csv"],
     )
+    tdp_visible_assignment_trace_csv_path = _ensure_output_file(
+        Path(tdp_visible_assignment_trace_csv) if tdp_visible_assignment_trace_csv else (out_dir / "tdp_visible_assignment_trace.csv"),
+        PRIMARY_OUTPUT_SPECS["tdp_visible_assignment_trace.csv"],
+    )
+    tdp_identity_resurfacing_trace_csv_path = _ensure_output_file(
+        Path(tdp_identity_resurfacing_trace_csv) if tdp_identity_resurfacing_trace_csv else (out_dir / "tdp_identity_resurfacing_trace.csv"),
+        PRIMARY_OUTPUT_SPECS["tdp_identity_resurfacing_trace.csv"],
+    )
+    tdp_disappearance_trace_csv_path = _ensure_output_file(
+        Path(tdp_disappearance_trace_csv) if tdp_disappearance_trace_csv else (out_dir / "tdp_disappearance_trace.csv"),
+        PRIMARY_OUTPUT_SPECS["tdp_disappearance_trace.csv"],
+    )
+    parity_filter_diagnostics_csv_path = _ensure_output_file(
+        Path(parity_filter_diagnostics_csv) if parity_filter_diagnostics_csv else (out_dir / "parity_filter_diagnostics.csv"),
+        PRIMARY_OUTPUT_SPECS["parity_filter_diagnostics.csv"],
+    )
+    opportunity_manager_snapshot_csv_path = (
+        Path(opportunity_manager_snapshot_csv)
+        if opportunity_manager_snapshot_csv
+        else (out_dir / "opportunity_manager_snapshot.csv")
+    )
     state_dir = out_dir / "live_observation_state"
     _ensure_parent(state_dir / "dummy.txt")
+    tdp_true_birth_trace_csv_path = _ensure_output_file(
+        Path(tdp_true_birth_trace_csv) if tdp_true_birth_trace_csv else (out_dir / "tdp_true_birth_trace.csv"),
+        PRIMARY_OUTPUT_SPECS["tdp_true_birth_trace.csv"],
+    )
+
 
     position_compatibility_ok, position_compatibility_message = _validate_position_closer_compatibility(shell, position_state_csv)
     if position_compatibility_ok:
@@ -630,10 +685,13 @@ def run_live_parity_replay(
                     "debug": bool(debug),
                     "debug_force_entries": bool(debug_force_entries),
                     "use_wait_confirmation": bool(use_wait_confirmation),
+                    "tdp_wait_off_only": bool(tdp_wait_off_only),
                     "candidate_pressure_csv": candidate_pressure_csv,
                     "cluster_score_mode": cluster_score_mode,
                     "cluster_max_per_group": cluster_max_per_group,
                     "cluster_rank_signal_score": bool(cluster_rank_signal_score),
+                    "cluster_score_shadow_v2": bool(cluster_score_shadow_v2),
+                    "cluster_score_shadow_v2_csv": str(cluster_score_shadow_v2_csv or (out_dir / "cluster_score_shadow_v2.csv")),
                     "rr": float(rr),
                     "sl_atr_buffer": float(sl_atr_buffer),
                     "require_impulse_before_tdp": bool(require_impulse_before_tdp),
@@ -649,6 +707,15 @@ def run_live_parity_replay(
                     "structural_ts_shadow_csv": str(structural_ts_shadow_csv_path),
                     "pre_visible_entry_exposure_csv": str(pre_visible_entry_exposure_csv_path),
                     "entry_model_pre_admission_csv": str(entry_model_pre_admission_csv_path),
+                    "tdp_visible_assignment_trace_csv": str(tdp_visible_assignment_trace_csv_path),
+                    "tdp_identity_resurfacing_trace_csv": str(tdp_identity_resurfacing_trace_csv_path),
+                    "tdp_disappearance_trace_csv": str(tdp_disappearance_trace_csv_path),
+                    "tdp_true_birth_trace_csv": str(tdp_true_birth_trace_csv_path),
+                    "parity_filter_mode": str(parity_filter_mode or "NONE"),
+                    "parity_filter_diagnostics_csv": str(parity_filter_diagnostics_csv_path),
+                    "opportunity_manager_snapshot_csv": str(opportunity_manager_snapshot_csv_path),
+                    "parity_range_width_pct_min": float(parity_range_width_pct_min),
+                    "parity_distance_to_entry_R_min": float(parity_distance_to_entry_R_min),
                 }
                 call_kwargs = {k: kwargs[k] for k in required_params}
                 written = shell.run_symbol_once(**call_kwargs)
@@ -697,6 +764,8 @@ def run_live_parity_replay(
         print(f"[LIVE_PARITY] structural_ts_shadow -> {structural_ts_shadow_csv_path}")
         print(f"[LIVE_PARITY] pre_visible_entry_exposure -> {pre_visible_entry_exposure_csv_path}")
         print(f"[LIVE_PARITY] entry_model_pre_admission -> {entry_model_pre_admission_csv_path}")
+        print(f"[LIVE_PARITY] parity_filter_diag -> {parity_filter_diagnostics_csv_path}")
+        print(f"[LIVE_PARITY] parity_filter_mode -> {parity_filter_mode}")
 
         if smoke_test:
             print("[SMOKE_TEST] first replay timestamp:", metrics["first_replay_ts"])
@@ -730,6 +799,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--debug_force_entries", action="store_true")
     ap.add_argument("--use_wait_confirmation", action="store_true")
+    ap.add_argument("--tdp_wait_off_only", action="store_true")
     ap.add_argument("--candidate_pressure_csv", default="backtest/journal/exports_live/candidate_pressure.csv")
     ap.add_argument("--raw_candidate_diag_csv", default=None)
     ap.add_argument("--pressure_window_summary_csv", default=None)
@@ -739,9 +809,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--structural_ts_shadow_csv", default="")
     ap.add_argument("--pre_visible_entry_exposure_csv", default="")
     ap.add_argument("--entry_model_pre_admission_csv", default="")
-    ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
+    ap.add_argument("--tdp_visible_assignment_trace_csv", default="")
+    ap.add_argument("--tdp_identity_resurfacing_trace_csv", default="")
+    ap.add_argument("--tdp_disappearance_trace_csv", default="")
+    ap.add_argument("--tdp_true_birth_trace_csv", default="")
+    ap.add_argument("--parity_filter_mode", choices=("NONE", "RANGE_AGE_3_5", "COMBINED_FINGERPRINT", "REMOVE_RANGE_AGE_1_2", "RANGE_GEOMETRY_P50"), default="NONE")
+    ap.add_argument("--parity_filter_diagnostics_csv", default="")
+    ap.add_argument("--opportunity_manager_snapshot_csv", default=None)
+    ap.add_argument("--parity_range_width_pct_min", type=float, default=0.0)
+    ap.add_argument("--parity_distance_to_entry_R_min", type=float, default=0.5)
+    ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE", "SHADOW_SCORE_V2", "SHADOW_SCORE_V3_TDP_ONLY", "SHADOW_SCORE_V4A_RANGE_WIDE", "SHADOW_SCORE_V4B_RANGE_REALISTIC", "SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
     ap.add_argument("--cluster_rank_signal_score", action="store_true")
+    ap.add_argument("--cluster_score_shadow_v2", action="store_true")
+    ap.add_argument("--cluster_score_shadow_v2_csv", default="")
     ap.add_argument("--rr", type=float, default=2.0)
     ap.add_argument("--sl_atr_buffer", type=float, default=0.15)
     ap.add_argument("--require_impulse_before_tdp", action="store_true")
@@ -784,10 +865,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         debug=bool(args.debug),
         debug_force_entries=bool(args.debug_force_entries),
         use_wait_confirmation=bool(args.use_wait_confirmation),
+        tdp_wait_off_only=bool(args.tdp_wait_off_only),
         candidate_pressure_csv=str(args.candidate_pressure_csv),
         cluster_score_mode=cluster_score_mode,
         cluster_max_per_group=args.cluster_max_per_group,
         cluster_rank_signal_score=bool(args.cluster_rank_signal_score),
+        cluster_score_shadow_v2=bool(args.cluster_score_shadow_v2),
+        cluster_score_shadow_v2_csv=str(args.cluster_score_shadow_v2_csv or ""),
         rr=float(args.rr),
         sl_atr_buffer=float(args.sl_atr_buffer),
         require_impulse_before_tdp=bool(args.require_impulse_before_tdp),
@@ -803,6 +887,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         structural_ts_shadow_csv=str(args.structural_ts_shadow_csv or ""),
         pre_visible_entry_exposure_csv=str(args.pre_visible_entry_exposure_csv or ""),
         entry_model_pre_admission_csv=str(args.entry_model_pre_admission_csv or ""),
+        tdp_visible_assignment_trace_csv=str(args.tdp_visible_assignment_trace_csv or ""),
+        tdp_identity_resurfacing_trace_csv=str(args.tdp_identity_resurfacing_trace_csv or ""),
+        tdp_disappearance_trace_csv=str(args.tdp_disappearance_trace_csv or ""),
+        tdp_true_birth_trace_csv=str(args.tdp_true_birth_trace_csv or ""),
+        parity_filter_mode=str(args.parity_filter_mode or "NONE"),
+        parity_filter_diagnostics_csv=str(args.parity_filter_diagnostics_csv or ""),
+        opportunity_manager_snapshot_csv="" if args.opportunity_manager_snapshot_csv is None else str(args.opportunity_manager_snapshot_csv),
+        parity_range_width_pct_min=float(args.parity_range_width_pct_min),
+        parity_distance_to_entry_R_min=float(args.parity_distance_to_entry_R_min),
         smoke_test=bool(args.smoke_test),
     )
     return 0

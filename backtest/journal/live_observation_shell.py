@@ -99,6 +99,31 @@ FLOW_LOG_COLUMNS = [
     "notes",
     "death_stage",
     "death_reason",
+    "parity_filter_mode",
+    "parity_filter_stage",
+    "filter_input_rows",
+    "filter_missing_range_width_pct",
+    "filter_missing_distance_to_entry_R",
+    "filter_pass_rows",
+    "filter_reject_rows",
+    "filter_pass_then_emitted",
+    "filter_pass_then_wait_confirmation_death",
+    "filter_pass_then_stale_death",
+    "filter_pass_then_position_gate_death",
+    "stale_anchor_current_ts",
+    "stale_anchor_visible_ts",
+    "stale_anchor_wait_confirm_ts",
+    "stale_age_current_bars",
+    "stale_age_visible_bars",
+    "stale_age_wait_confirm_bars",
+    "stale_window_allowed_bars",
+    "current_stale_decision",
+    "visible_rebase_stale_decision",
+    "wait_rebase_stale_decision",
+    "would_pass_if_visible_rebased",
+    "would_pass_if_wait_rebased",
+    "stale_authority_disagreement",
+    "stale_disagreement_type",
 ]
 
 # -----------------------------------------------------------------------------
@@ -131,6 +156,10 @@ RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS = [
     "death_stage",
     "death_reason",
     "passed_wait",
+    "wait_bypassed",
+    "wait_bypass_scope",
+    "would_have_failed_wait",
+    "wait_shadow_decision",
     "passed_stale",
     "passed_idempotency",
     "passed_position_gate",
@@ -156,7 +185,66 @@ RAW_CANDIDATE_LIFECYCLE_DIAG_COLUMNS = [
     "reward_distance",
     "distance_to_entry_pct",
     "distance_to_entry_R",
+    "stale_anchor_current_ts",
+    "stale_anchor_visible_ts",
+    "stale_anchor_wait_confirm_ts",
+    "stale_age_current_bars",
+    "stale_age_visible_bars",
+    "stale_age_wait_confirm_bars",
+    "stale_window_allowed_bars",
+    "current_stale_decision",
+    "visible_rebase_stale_decision",
+    "wait_rebase_stale_decision",
+    "would_pass_if_visible_rebased",
+    "would_pass_if_wait_rebased",
+    "stale_authority_disagreement",
+    "stale_disagreement_type",
+    "parity_filter_applied",
+    "parity_filter_passed",
+    "parity_filter_name",
+    "parity_filter_reason",
+    "parity_filter_stage",
+    "filter_range_width_pct",
+    "filter_distance_to_entry_R",
+    "filter_threshold_range_width_pct",
+    "filter_threshold_distance_to_entry_R",
 ]
+
+PARITY_FILTER_DIAGNOSTICS_COLUMNS = [
+    "timestamp",
+    "cycle_ts",
+    "symbol",
+    "model",
+    "side",
+    "canonical_setup_key",
+    "candidate_ts",
+    "visible_ts",
+    "wait_confirm_ts",
+    "setup_age_bars",
+    "range_width_pct",
+    "distance_to_entry_R",
+    "distance_to_entry_pct",
+    "entry_to_range_low_pct",
+    "entry_to_range_high_pct",
+    "planned_rr",
+    "risk_pct",
+    "reward_pct",
+    "filter_name",
+    "filter_applied",
+    "filter_passed",
+    "filter_failed_condition",
+    "death_stage",
+    "death_reason",
+    "is_emitted",
+]
+
+PARITY_FILTER_MODES = {
+    "NONE",
+    "RANGE_AGE_3_5",
+    "COMBINED_FINGERPRINT",
+    "REMOVE_RANGE_AGE_1_2",
+    "RANGE_GEOMETRY_P50",
+}
 
 TDP_STALE_SHADOW_COLUMNS = [
     "cycle_ts",
@@ -216,6 +304,10 @@ STRUCTURAL_TS_SHADOW_COLUMNS = [
     "death_reason",
     "is_emitted",
     "passed_wait",
+    "wait_bypassed",
+    "wait_bypass_scope",
+    "would_have_failed_wait",
+    "wait_shadow_decision",
     "passed_stale",
     "passed_idempotency",
     "passed_position_gate",
@@ -269,6 +361,10 @@ SNIPER_CANDIDATE_DIAG_COLUMNS = [
     "is_candidate_contraction",
     "is_emitted",
     "passed_wait",
+    "wait_bypassed",
+    "wait_bypass_scope",
+    "would_have_failed_wait",
+    "wait_shadow_decision",
     "passed_stale",
     "passed_idempotency",
     "passed_position_gate",
@@ -441,6 +537,112 @@ def _telemetry_closed_bars_between(candles_df: Optional[pd.DataFrame], start_ts,
     if minutes < 0:
         return ""
     return int(minutes // 15.0)
+
+
+def _stale_shadow_ts(row: Dict[str, object], names: List[str]):
+    for name in names:
+        ts = pd.to_datetime(row.get(name, pd.NaT), utc=True, errors="coerce")
+        if pd.notna(ts):
+            return ts
+    return pd.NaT
+
+
+def _stale_shadow_allowed_bars(row: Dict[str, object]):
+    model = str(row.get("model", "") or "").upper()
+    if model == "TDP_REENTRY":
+        return 4
+    if model.startswith("RANGE_"):
+        return 1
+    return ""
+
+
+def _stale_shadow_timeframe_minutes(row: Dict[str, object]) -> float:
+    try:
+        setup_age_bars = pd.to_numeric(pd.Series([row.get("setup_age_bars", "")]), errors="coerce").iloc[0]
+        setup_age_minutes = pd.to_numeric(pd.Series([row.get("setup_age_minutes", "")]), errors="coerce").iloc[0]
+        if pd.notna(setup_age_bars) and float(setup_age_bars) > 0 and pd.notna(setup_age_minutes):
+            tf = float(setup_age_minutes) / float(setup_age_bars)
+            if tf > 0:
+                return tf
+    except Exception:
+        pass
+    return 15.0
+
+
+def _stale_shadow_age_bars(now_ts, anchor_ts, timeframe_minutes: float):
+    now_ts = pd.to_datetime(now_ts, utc=True, errors="coerce")
+    anchor_ts = pd.to_datetime(anchor_ts, utc=True, errors="coerce")
+    if pd.isna(now_ts) or pd.isna(anchor_ts):
+        return ""
+    minutes = float((now_ts - anchor_ts).total_seconds() / 60.0)
+    if minutes < 0 or timeframe_minutes <= 0:
+        return ""
+    return int(minutes // float(timeframe_minutes))
+
+
+def _stale_shadow_decision(age_bars, allowed_bars):
+    if age_bars == "" or allowed_bars == "":
+        return ""
+    try:
+        return bool(int(age_bars) > int(allowed_bars))
+    except Exception:
+        return ""
+
+
+def _stale_authority_shadow_fields(row: Dict[str, object]) -> Dict[str, object]:
+    """Telemetry-only stale authority matrix.
+
+    This function does not feed any trading gate. It only compares the actual
+    production stale result with alternative visible_ts / wait_confirm_ts
+    anchors for diagnostics.
+    """
+    now_ts = _stale_shadow_ts(row, ["latest_ts", "cycle_ts"])
+    current_anchor = _stale_shadow_ts(row, ["setup_created_ts", "candidate_ts", "timestamp"])
+    visible_anchor = _stale_shadow_ts(row, ["visible_ts", "pipeline_visible_ts"])
+    wait_anchor = _stale_shadow_ts(row, ["wait_confirm_ts"])
+    allowed_bars = _stale_shadow_allowed_bars(row)
+    timeframe_minutes = _stale_shadow_timeframe_minutes(row)
+
+    current_age = _stale_shadow_age_bars(now_ts, current_anchor, timeframe_minutes)
+    visible_age = _stale_shadow_age_bars(now_ts, visible_anchor, timeframe_minutes)
+    wait_age = _stale_shadow_age_bars(now_ts, wait_anchor, timeframe_minutes)
+
+    actual_current_stale = bool(str(row.get("death_reason", "") or "") == "stale_execution_window")
+    visible_decision = _stale_shadow_decision(visible_age, allowed_bars)
+    wait_decision = _stale_shadow_decision(wait_age, allowed_bars)
+
+    would_pass_visible = bool(actual_current_stale and visible_decision is False)
+    would_pass_wait = bool(actual_current_stale and wait_decision is False)
+
+    disagreement_types: List[str] = []
+    if visible_decision != "" and bool(visible_decision) != actual_current_stale:
+        disagreement_types.append("current_stale_visible_pass" if actual_current_stale else "current_pass_visible_stale")
+    if wait_decision != "" and bool(wait_decision) != actual_current_stale:
+        disagreement_types.append("current_stale_wait_pass" if actual_current_stale else "current_pass_wait_stale")
+
+    if disagreement_types:
+        disagreement_type = ";".join(disagreement_types)
+    elif visible_decision == "" and wait_decision == "":
+        disagreement_type = "not_applicable"
+    else:
+        disagreement_type = "no_disagreement"
+
+    return {
+        "stale_anchor_current_ts": current_anchor,
+        "stale_anchor_visible_ts": visible_anchor,
+        "stale_anchor_wait_confirm_ts": wait_anchor,
+        "stale_age_current_bars": current_age,
+        "stale_age_visible_bars": visible_age,
+        "stale_age_wait_confirm_bars": wait_age,
+        "stale_window_allowed_bars": allowed_bars,
+        "current_stale_decision": actual_current_stale,
+        "visible_rebase_stale_decision": visible_decision,
+        "wait_rebase_stale_decision": wait_decision,
+        "would_pass_if_visible_rebased": would_pass_visible,
+        "would_pass_if_wait_rebased": would_pass_wait,
+        "stale_authority_disagreement": bool(disagreement_types),
+        "stale_disagreement_type": disagreement_type,
+    }
 
 
 def _telemetry_pressure_window_fields(symbol: str, latest_ts: pd.Timestamp, raw_count: int) -> Dict[str, object]:
@@ -634,11 +836,32 @@ def _mark_raw_candidate_diag_rows(
     pos_keys = _diag_key_set(position_df)
     emit_keys = _diag_key_set(emitted_df)
 
+    wait_meta_by_key = {}
+    try:
+        if wait_df is not None and not wait_df.empty:
+            for _, wr in wait_df.iterrows():
+                wk = str(wr.get("canonical_setup_key") or wr.get("setup_id") or "")
+                if not wk:
+                    continue
+                wait_meta_by_key[wk] = {
+                    "wait_bypassed": bool(wr.get("wait_bypassed", False)),
+                    "wait_bypass_scope": str(wr.get("wait_bypass_scope", "") or ""),
+                    "would_have_failed_wait": bool(wr.get("would_have_failed_wait", False)),
+                    "wait_shadow_decision": str(wr.get("wait_shadow_decision", "") or ""),
+                }
+    except Exception:
+        wait_meta_by_key = {}
+
     out = []
     for row in rows:
         k = str(row.get("canonical_setup_key") or row.get("setup_id") or "")
         r = dict(row)
         r["passed_wait"] = bool(k and k in wait_keys)
+        wait_meta = wait_meta_by_key.get(k, {})
+        r["wait_bypassed"] = bool(wait_meta.get("wait_bypassed", False))
+        r["wait_bypass_scope"] = str(wait_meta.get("wait_bypass_scope", "") or "")
+        r["would_have_failed_wait"] = bool(wait_meta.get("would_have_failed_wait", False))
+        r["wait_shadow_decision"] = str(wait_meta.get("wait_shadow_decision", "") or "")
         r["passed_idempotency"] = bool(k and k in idem_keys)
         r["passed_stale"] = bool(k and k in stale_keys)
         r["passed_position_gate"] = bool(k and k in pos_keys)
@@ -652,6 +875,7 @@ def _mark_raw_candidate_diag_rows(
         else:
             r["death_stage"] = death_stage
             r["death_reason"] = death_reason
+        r.update(_stale_authority_shadow_fields(r))
         out.append(r)
     return out
 
@@ -1873,9 +2097,250 @@ def _derive_phase(df_e: Optional[pd.DataFrame], ctx: Dict[str, object]) -> str:
         return ""
 
 
+
+def _parity_filter_bool(value) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _parity_filter_num(value):
+    try:
+        out = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    except Exception:
+        return None
+    if pd.isna(out):
+        return None
+    return float(out)
+
+
+def _parity_filter_mode(mode: str) -> str:
+    mode = str(mode or "NONE").strip().upper()
+    return mode if mode in PARITY_FILTER_MODES else "NONE"
+
+
+def _parity_filter_enrich_fields(out_df: pd.DataFrame, candles_df: Optional[pd.DataFrame], latest_ts) -> pd.DataFrame:
+    """Attach research-filter geometry fields to candidate rows if absent.
+
+    This is parity research telemetry only. It uses the same diagnostic helpers as
+    raw_candidate_lifecycle_diag and does not affect live behavior when filters
+    are disabled.
+    """
+    if out_df is None or out_df.empty:
+        return out_df
+    out = out_df.copy()
+    required = [
+        "range_width_pct",
+        "distance_to_entry_R",
+        "distance_to_entry_pct",
+        "entry_to_range_low_pct",
+        "entry_to_range_high_pct",
+        "planned_rr",
+        "risk_pct",
+        "reward_pct",
+        "setup_age_bars",
+    ]
+    for col in required:
+        if col not in out.columns:
+            out[col] = pd.Series([pd.NA] * len(out), index=out.index, dtype="object")
+        else:
+            # Candidate rows can arrive with pandas StringDtype columns. Geometry
+            # enrichment writes floats, so force object dtype before scalar assignment.
+            out[col] = out[col].astype("object")
+
+    for idx, row in out.iterrows():
+        setup_created_ts = pd.to_datetime(row.get("setup_created_ts", row.get("timestamp", pd.NaT)), utc=True, errors="coerce")
+        first_seen_ts = _telemetry_candidate_first_seen_ts(row, latest_ts)
+        computed = _telemetry_range_and_rr_fields(
+            row,
+            candles_df=candles_df,
+            setup_created_ts=setup_created_ts,
+            first_seen_ts=first_seen_ts,
+        )
+        for col, val in computed.items():
+            cur = out.at[idx, col] if col in out.columns else ""
+            if str(cur) == "" or str(cur).lower() == "nan" or pd.isna(cur):
+                out.at[idx, col] = val
+        cur_age = out.at[idx, "setup_age_bars"] if "setup_age_bars" in out.columns else ""
+        if str(cur_age) == "" or str(cur_age).lower() == "nan" or pd.isna(cur_age):
+            out.at[idx, "setup_age_bars"] = _telemetry_closed_bars_between(candles_df, setup_created_ts, first_seen_ts)
+    return out
+
+
+def _parity_filter_failed_condition(row: pd.Series, mode: str, *, range_width_min: float, distance_min: float) -> tuple[bool, str]:
+    mode = _parity_filter_mode(mode)
+    if mode == "NONE":
+        return True, ""
+
+    model = str(row.get("model", "") or "")
+    setup_age = _parity_filter_num(row.get("setup_age_bars", ""))
+    distance_r = _parity_filter_num(row.get("distance_to_entry_R", ""))
+    range_width = _parity_filter_num(row.get("range_width_pct", ""))
+
+    if mode == "RANGE_AGE_3_5":
+        if model != "RANGE_TOP_SHORT_V2":
+            return False, "model_not_range"
+        if setup_age is None:
+            return False, "missing_setup_age_bars"
+        if not (3 <= setup_age <= 5):
+            return False, "setup_age_bars_outside_3_5"
+        return True, ""
+
+    if mode == "COMBINED_FINGERPRINT":
+        if model == "RANGE_TOP_SHORT_V2":
+            if setup_age is None:
+                return False, "missing_setup_age_bars"
+            if 3 <= setup_age <= 5:
+                return True, ""
+            return False, "range_setup_age_bars_outside_3_5"
+        if model == "TDP_REENTRY":
+            if distance_r is None:
+                return False, "missing_distance_to_entry_R"
+            if distance_r >= 8:
+                return True, ""
+            return False, "distance_to_entry_R_below_8"
+        return False, "unsupported_model"
+
+    if mode == "REMOVE_RANGE_AGE_1_2":
+        if model == "RANGE_TOP_SHORT_V2":
+            if setup_age is None:
+                return False, "missing_setup_age_bars"
+            if 1 <= setup_age <= 2:
+                return False, "range_setup_age_bars_1_2_removed"
+        return True, ""
+
+    if mode == "RANGE_GEOMETRY_P50":
+        if model != "RANGE_TOP_SHORT_V2":
+            return False, "model_not_range"
+        if range_width is None:
+            return False, "missing_range_width_pct"
+        if distance_r is None:
+            return False, "missing_distance_to_entry_R"
+        if range_width < float(range_width_min):
+            return False, "range_width_pct_below_threshold"
+        if distance_r <= float(distance_min):
+            return False, "distance_to_entry_R_below_threshold"
+        return True, ""
+
+    return True, ""
+
+
+def _append_parity_filter_diagnostics(path_like, rows: List[Dict[str, object]]) -> None:
+    path = _diag_path(path_like)
+    if path is None or not rows:
+        return
+    _ensure_parent(path)
+    out = pd.DataFrame(rows)
+    for col in PARITY_FILTER_DIAGNOSTICS_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[PARITY_FILTER_DIAGNOSTICS_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+def _apply_parity_research_filter(
+    *,
+    out_df: pd.DataFrame,
+    candles_df: Optional[pd.DataFrame],
+    latest_ts,
+    cycle_ts,
+    filter_mode: str,
+    filter_diag_csv: str,
+    range_width_min: float,
+    distance_min: float,
+) -> tuple[pd.DataFrame, Dict[str, object]]:
+    mode = _parity_filter_mode(filter_mode)
+    stats: Dict[str, object] = {
+        "parity_filter_mode": mode,
+        "parity_filter_stage": "pre_final_selection_pre_emission",
+        "filter_input_rows": 0,
+        "filter_missing_range_width_pct": 0,
+        "filter_missing_distance_to_entry_R": 0,
+        "filter_pass_rows": 0,
+        "filter_reject_rows": 0,
+        "filter_pass_then_emitted": 0,
+        "filter_pass_then_wait_confirmation_death": 0,
+        "filter_pass_then_stale_death": 0,
+        "filter_pass_then_position_gate_death": 0,
+    }
+    if out_df is None or out_df.empty or mode == "NONE":
+        return out_df, stats
+
+    enriched = _parity_filter_enrich_fields(out_df, candles_df, latest_ts)
+    rows = []
+    keep_indices = []
+    for idx, row in enriched.iterrows():
+        stats["filter_input_rows"] = int(stats["filter_input_rows"]) + 1
+        rw = _parity_filter_num(row.get("range_width_pct", ""))
+        dr = _parity_filter_num(row.get("distance_to_entry_R", ""))
+        if rw is None:
+            stats["filter_missing_range_width_pct"] = int(stats["filter_missing_range_width_pct"]) + 1
+        if dr is None:
+            stats["filter_missing_distance_to_entry_R"] = int(stats["filter_missing_distance_to_entry_R"]) + 1
+
+        passed, failed_condition = _parity_filter_failed_condition(
+            row,
+            mode,
+            range_width_min=float(range_width_min),
+            distance_min=float(distance_min),
+        )
+        if passed:
+            keep_indices.append(idx)
+            stats["filter_pass_rows"] = int(stats["filter_pass_rows"]) + 1
+        else:
+            stats["filter_reject_rows"] = int(stats["filter_reject_rows"]) + 1
+
+        rows.append({
+            "timestamp": pd.to_datetime(row.get("timestamp", pd.NaT), utc=True, errors="coerce"),
+            "cycle_ts": pd.to_datetime(cycle_ts, utc=True, errors="coerce"),
+            "symbol": str(row.get("symbol", "") or "").upper(),
+            "model": str(row.get("model", "") or ""),
+            "side": str(row.get("side", "") or "").upper(),
+            "canonical_setup_key": str(row.get("canonical_setup_key", "") or ""),
+            "candidate_ts": pd.to_datetime(row.get("candidate_ts", row.get("timestamp", pd.NaT)), utc=True, errors="coerce"),
+            "visible_ts": pd.to_datetime(row.get("visible_ts", pd.NaT), utc=True, errors="coerce"),
+            "wait_confirm_ts": pd.to_datetime(row.get("wait_confirm_ts", pd.NaT), utc=True, errors="coerce"),
+            "setup_age_bars": row.get("setup_age_bars", ""),
+            "range_width_pct": row.get("range_width_pct", ""),
+            "distance_to_entry_R": row.get("distance_to_entry_R", ""),
+            "distance_to_entry_pct": row.get("distance_to_entry_pct", ""),
+            "entry_to_range_low_pct": row.get("entry_to_range_low_pct", ""),
+            "entry_to_range_high_pct": row.get("entry_to_range_high_pct", ""),
+            "planned_rr": row.get("planned_rr", row.get("rr", "")),
+            "risk_pct": row.get("risk_pct", ""),
+            "reward_pct": row.get("reward_pct", ""),
+            "filter_name": mode,
+            "filter_applied": True,
+            "filter_passed": bool(passed),
+            "filter_failed_condition": failed_condition,
+            "death_stage": "" if passed else "parity_filter",
+            "death_reason": "" if passed else failed_condition,
+            "is_emitted": False,
+        })
+
+    _append_parity_filter_diagnostics(filter_diag_csv, rows)
+
+    if not keep_indices:
+        return enriched.iloc[0:0].copy(), stats
+
+    kept = enriched.loc[keep_indices].copy()
+    kept["parity_filter_applied"] = True
+    kept["parity_filter_passed"] = True
+    kept["parity_filter_name"] = mode
+    kept["parity_filter_reason"] = "passed"
+    kept["parity_filter_stage"] = "pre_final_selection_pre_emission"
+    kept["filter_range_width_pct"] = kept.get("range_width_pct", "")
+    kept["filter_distance_to_entry_R"] = kept.get("distance_to_entry_R", "")
+    kept["filter_threshold_range_width_pct"] = float(range_width_min)
+    kept["filter_threshold_distance_to_entry_R"] = float(distance_min)
+    return kept, stats
+
 def _append_flow_row(flow_log_csv: Path, row: Dict[str, object]) -> None:
     _ensure_parent(flow_log_csv)
-    out = pd.DataFrame([{c: row.get(c, "") for c in FLOW_LOG_COLUMNS}])
+    flow_row = dict(row)
+    flow_row.update(_stale_authority_shadow_fields(flow_row))
+    out = pd.DataFrame([{c: flow_row.get(c, "") for c in FLOW_LOG_COLUMNS}])
     if not flow_log_csv.exists() or flow_log_csv.stat().st_size == 0:
         out.to_csv(flow_log_csv, index=False)
     else:
@@ -2061,6 +2526,47 @@ def _apply_execution_window_guard(
 
     out = wait_checked.copy()
 
+    # Research-only: TDP_WAIT_OFF_ONLY must match global WAIT_OFF semantics
+    # for bypassed TDP rows. Therefore these rows must not be evaluated by
+    # the wait_confirm_ts-anchored execution-window guard.
+    bypass_mask = pd.Series(False, index=out.index)
+    if "wait_bypassed" in out.columns:
+        bypass_mask = (
+            out["wait_bypassed"]
+            .astype(str)
+            .str.lower()
+            .isin(["true", "1", "yes"])
+        )
+    bypass_out = out.loc[bypass_mask].copy()
+    if not bypass_out.empty:
+        visible_anchor = pd.Series(pd.NaT, index=bypass_out.index)
+        if "visible_ts" in bypass_out.columns:
+            visible_anchor = pd.to_datetime(
+                bypass_out["visible_ts"], utc=True, errors="coerce"
+            )
+        latest_anchor = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+        observable_anchor = visible_anchor.fillna(latest_anchor)
+
+        # Causality repair for research-only TDP_WAIT_OFF_ONLY:
+        # bypassed rows must not open at setup_created_ts or wait_confirm_ts.
+        # They become executable only when observable in the replay cycle.
+        for ts_col in (
+            "signal_ts",
+            "timestamp",
+            "trade_open_ts",
+            "opened_ts",
+            "intended_entry_ts",
+        ):
+            bypass_out[ts_col] = observable_anchor
+        bypass_out["entry_window_expires_ts"] = observable_anchor
+        bypass_out["entry_delay_minutes"] = 0.0
+        bypass_out["execution_ts_source"] = "tdp_wait_off_only_observable_anchor"
+        bypass_out["wait_context_source"] = "tdp_wait_off_only_observable_anchor"
+        bypass_out["entry_timing_valid"] = True
+    out = out.loc[~bypass_mask].copy()
+    if out.empty:
+        return bypass_out
+
     out["setup_created_ts"] = pd.to_datetime(
         out.get("setup_created_ts", out.get("timestamp", pd.NaT)),
         utc=True,
@@ -2160,7 +2666,10 @@ def _apply_execution_window_guard(
             stale_flow_row["death_reason"] = "stale_execution_window"
             _append_flow_row(flow_log_csv, stale_flow_row)
 
-    return out.loc[timing_valid_mask].copy()
+    valid_out = out.loc[timing_valid_mask].copy()
+    if not bypass_out.empty:
+        return pd.concat([valid_out, bypass_out], ignore_index=True, sort=False)
+    return valid_out
 
 def _canonical_created_ts_for_diagnostics(canonical_setup_key: object):
     try:
@@ -2555,10 +3064,13 @@ def run_symbol_once(
     debug: bool,
     debug_force_entries: bool,
     use_wait_confirmation: bool,
+    tdp_wait_off_only: bool,
     candidate_pressure_csv: str,
     cluster_score_mode: Optional[str],
     cluster_max_per_group: Optional[int],
     cluster_rank_signal_score: bool,
+    cluster_score_shadow_v2: bool = False,
+    cluster_score_shadow_v2_csv: str = "",
     rr: float,
     sl_atr_buffer: float,
     require_impulse_before_tdp: bool,
@@ -2574,6 +3086,15 @@ def run_symbol_once(
     structural_ts_shadow_csv: str = "",
     pre_visible_entry_exposure_csv: str = "",
     entry_model_pre_admission_csv: str = "",
+    tdp_visible_assignment_trace_csv: str = "",
+    tdp_identity_resurfacing_trace_csv: str = "",
+    tdp_disappearance_trace_csv: str = "",
+    tdp_true_birth_trace_csv: str = "",
+    parity_filter_mode: str = "NONE",
+    parity_filter_diagnostics_csv: str = "",
+    opportunity_manager_snapshot_csv: str = "",
+    parity_range_width_pct_min: float = 0.0,
+    parity_distance_to_entry_R_min: float = 0.5,
 ) -> int:
     candles_df = load_bybit_latest(category, symbol, interval, candles_n)
     fetch_status = LAST_BYBIT_FETCH_STATUS.get(str(symbol).upper(), FETCH_STATUS_EMPTY)
@@ -2681,6 +3202,7 @@ def run_symbol_once(
         "macro_bias": "NEUTRAL",
         "debug": bool(debug),
         "use_wait_confirmation": bool(use_wait_confirmation),
+        "tdp_wait_off_only": bool(tdp_wait_off_only),
         "candidate_pressure_csv": candidate_pressure_csv,
         "rr": float(rr),
         "sl_atr_buffer": float(sl_atr_buffer),
@@ -2696,6 +3218,10 @@ def run_symbol_once(
         "cycle_ts": pd.to_datetime(cycle_ts, utc=True, errors="coerce"),
         "pre_visible_entry_exposure_csv": str(pre_visible_entry_exposure_csv or ""),
         "entry_model_pre_admission_csv": str(entry_model_pre_admission_csv or ""),
+        "tdp_visible_assignment_trace_csv": str(tdp_visible_assignment_trace_csv or ""),
+        "tdp_identity_resurfacing_trace_csv": str(tdp_identity_resurfacing_trace_csv or ""),
+        "tdp_disappearance_trace_csv": str(tdp_disappearance_trace_csv or ""),
+        "tdp_true_birth_trace_csv": str(tdp_true_birth_trace_csv or ""),
         "DEBUG_FORCE_ENTRIES": bool(debug_force_entries),
     }
 
@@ -2706,6 +3232,10 @@ def run_symbol_once(
 
     if cluster_rank_signal_score:
         ctx["cluster_rank_signal_score"] = True
+
+    if cluster_score_shadow_v2:
+        ctx["cluster_score_shadow_v2"] = True
+        ctx["cluster_score_shadow_v2_csv"] = str(cluster_score_shadow_v2_csv or "")
 
     if cluster_max_per_group is not None:
         ctx["cluster_max_per_group"] = int(cluster_max_per_group)
@@ -2922,8 +3452,45 @@ def run_symbol_once(
 
     if bool(use_wait_confirmation):
         before_wait = len(entries)
-        entries_after_wait = apply_wait_confirmation(entries, window)
+        if bool(tdp_wait_off_only):
+            range_entries = [
+                e for e in entries
+                if str(e.get("model", "") or "") != "TDP_REENTRY"
+            ]
+            tdp_entries = [
+                dict(e) for e in entries
+                if str(e.get("model", "") or "") == "TDP_REENTRY"
+            ]
+
+            range_after_wait = apply_wait_confirmation(range_entries, window) if range_entries else []
+            tdp_shadow_after_wait = apply_wait_confirmation(tdp_entries, window) if tdp_entries else []
+            tdp_shadow_keys = {
+                str(e.get("canonical_setup_key") or e.get("setup_id") or "")
+                for e in tdp_shadow_after_wait
+            }
+
+            for e in tdp_entries:
+                k = str(e.get("canonical_setup_key") or e.get("setup_id") or "")
+                e["wait_bypassed"] = True
+                e["wait_bypass_scope"] = "TDP_REENTRY_ONLY"
+                e["would_have_failed_wait"] = bool(k and k not in tdp_shadow_keys)
+                e["wait_shadow_decision"] = "pass" if (k and k in tdp_shadow_keys) else "reject"
+                if not e.get("wait_confirm_ts"):
+                    e["wait_confirm_ts"] = e.get("timestamp", pd.NaT)
+                if not e.get("wait_context_source"):
+                    e["wait_context_source"] = "tdp_wait_off_only_bypass"
+
+            entries_after_wait = list(range_after_wait) + list(tdp_entries)
+        else:
+            entries_after_wait = apply_wait_confirmation(entries, window)
         after_wait = len(entries_after_wait)
+
+        if bool(tdp_wait_off_only):
+            try:
+                bypass_count = sum(1 for e in entries_after_wait if bool(e.get("wait_bypassed", False)))
+                flow_row["notes"] = (str(flow_row.get("notes", "") or "") + f";tdp_wait_off_only_bypass={bypass_count}").strip(";")
+            except Exception:
+                pass
 
         if entries_after_wait:
             wait_checked = pd.DataFrame(entries_after_wait)
@@ -3140,6 +3707,44 @@ def run_symbol_once(
         _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
+    out_df, parity_filter_stats = _apply_parity_research_filter(
+        out_df=out_df,
+        candles_df=candles_df,
+        latest_ts=latest_ts,
+        cycle_ts=cycle_ts,
+        filter_mode=parity_filter_mode,
+        filter_diag_csv=parity_filter_diagnostics_csv,
+        range_width_min=float(parity_range_width_pct_min),
+        distance_min=float(parity_distance_to_entry_R_min),
+    )
+    flow_row.update(parity_filter_stats)
+    if out_df.empty and str(parity_filter_stats.get("parity_filter_mode", "NONE")) != "NONE":
+        _write_state(state_path, latest_ts)
+        flow_row["notes"] = "died_in_parity_filter"
+        flow_row["death_stage"] = "parity_filter"
+        flow_row["death_reason"] = str(parity_filter_stats.get("parity_filter_mode", ""))
+        flow_row["emitted_count"] = 0
+        _append_flow_row(flow_log_csv, flow_row)
+        marked = _mark_raw_candidate_diag_rows(
+            raw_candidate_diag_rows,
+            wait_df=diag_wait_df,
+            idempotency_df=before_stale_df,
+            stale_df=before_stale_df,
+            death_stage="parity_filter",
+            death_reason=str(parity_filter_stats.get("parity_filter_mode", "")),
+        )
+        for r in marked:
+            r["parity_filter_applied"] = True
+            r["parity_filter_passed"] = False
+            r["parity_filter_name"] = str(parity_filter_stats.get("parity_filter_mode", ""))
+            r["parity_filter_reason"] = "rejected_or_not_at_hook"
+            r["parity_filter_stage"] = "pre_final_selection_pre_emission"
+            r["filter_threshold_range_width_pct"] = float(parity_range_width_pct_min)
+            r["filter_threshold_distance_to_entry_R"] = float(parity_distance_to_entry_R_min)
+        _append_cycle_candidate_diags(marked)
+        _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
+        return 0
+
     out_df = select_newest_live_candidate(out_df)
     flow_row["after_per_cycle_guard_count"] = int(len(out_df))
     flow_row["model_summary_after_per_cycle_guard"] = _series_summary(out_df, "model")
@@ -3334,6 +3939,7 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--debug_force_entries", action="store_true")
     ap.add_argument("--use_wait_confirmation", action="store_true")
+    ap.add_argument("--tdp_wait_off_only", action="store_true")
     ap.add_argument("--candidate_pressure_csv", default="backtest/journal/exports_live/candidate_pressure.csv")
     ap.add_argument("--raw_candidate_diag_csv", default="backtest/journal/exports_live/raw_candidate_lifecycle_diag.csv")
     ap.add_argument("--pressure_window_summary_csv", default="backtest/journal/exports_live/pressure_window_summary.csv")
@@ -3343,10 +3949,21 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--structural_ts_shadow_csv", default=None)
     ap.add_argument("--pre_visible_entry_exposure_csv", default=None)
     ap.add_argument("--entry_model_pre_admission_csv", default=None)
+    ap.add_argument("--tdp_visible_assignment_trace_csv", default=None)
+    ap.add_argument("--tdp_identity_resurfacing_trace_csv", default=None)
+    ap.add_argument("--tdp_disappearance_trace_csv", default=None)
+    ap.add_argument("--tdp_true_birth_trace_csv", default=None)
+    ap.add_argument("--parity_filter_mode", choices=sorted(PARITY_FILTER_MODES), default="NONE")
+    ap.add_argument("--parity_filter_diagnostics_csv", default=None)
+    ap.add_argument("--opportunity_manager_snapshot_csv", default=None)
+    ap.add_argument("--parity_range_width_pct_min", type=float, default=0.0)
+    ap.add_argument("--parity_distance_to_entry_R_min", type=float, default=0.5)
 
-    ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE"), default=None)
+    ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE", "SHADOW_SCORE_V2", "SHADOW_SCORE_V3_TDP_ONLY", "SHADOW_SCORE_V4A_RANGE_WIDE", "SHADOW_SCORE_V4B_RANGE_REALISTIC", "SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY"), default=None)
     ap.add_argument("--cluster_max_per_group", type=int, choices=(1, 2, 3), default=None)
     ap.add_argument("--cluster_rank_signal_score", action="store_true")
+    ap.add_argument("--cluster_score_shadow_v2", action="store_true")
+    ap.add_argument("--cluster_score_shadow_v2_csv", default=None)
 
     ap.add_argument("--rr", type=float, default=2.0)
     ap.add_argument("--sl_atr_buffer", type=float, default=0.15)
@@ -3377,6 +3994,12 @@ def main(argv: List[str] | None = None) -> int:
     structural_ts_shadow_csv = "" if args.structural_ts_shadow_csv is None else str(args.structural_ts_shadow_csv)
     pre_visible_entry_exposure_csv = "" if args.pre_visible_entry_exposure_csv is None else str(args.pre_visible_entry_exposure_csv)
     entry_model_pre_admission_csv = "" if args.entry_model_pre_admission_csv is None else str(args.entry_model_pre_admission_csv)
+    tdp_visible_assignment_trace_csv = "" if args.tdp_visible_assignment_trace_csv is None else str(args.tdp_visible_assignment_trace_csv)
+    tdp_identity_resurfacing_trace_csv = "" if args.tdp_identity_resurfacing_trace_csv is None else str(args.tdp_identity_resurfacing_trace_csv)
+    tdp_disappearance_trace_csv = "" if args.tdp_disappearance_trace_csv is None else str(args.tdp_disappearance_trace_csv)
+    tdp_true_birth_trace_csv = "" if args.tdp_true_birth_trace_csv is None else str(args.tdp_true_birth_trace_csv)
+    parity_filter_diagnostics_csv = "" if args.parity_filter_diagnostics_csv is None else str(args.parity_filter_diagnostics_csv)
+    opportunity_manager_snapshot_csv = "" if args.opportunity_manager_snapshot_csv is None else str(args.opportunity_manager_snapshot_csv)
 
     _ensure_output_csv(out_csv)
     _ensure_parent(flow_log_csv)
@@ -3386,6 +4009,7 @@ def main(argv: List[str] | None = None) -> int:
     consecutive_global_network_error_cycles = 0
     last_successful_data_ts: Optional[pd.Timestamp] = None
 
+    cluster_score_shadow_v2_csv = "" if args.cluster_score_shadow_v2_csv is None else str(args.cluster_score_shadow_v2_csv)
     while True:
         cycle_written = 0
         cycle_ts = pd.Timestamp.now("UTC")
@@ -3411,10 +4035,13 @@ def main(argv: List[str] | None = None) -> int:
                     debug=bool(args.debug),
                     debug_force_entries=bool(args.debug_force_entries),
                     use_wait_confirmation=bool(args.use_wait_confirmation),
+                    tdp_wait_off_only=bool(args.tdp_wait_off_only),
                     candidate_pressure_csv=str(args.candidate_pressure_csv),
                     cluster_score_mode=args.cluster_score_mode,
                     cluster_max_per_group=args.cluster_max_per_group,
                     cluster_rank_signal_score=bool(args.cluster_rank_signal_score),
+                    cluster_score_shadow_v2=bool(args.cluster_score_shadow_v2),
+                    cluster_score_shadow_v2_csv=cluster_score_shadow_v2_csv,
                     rr=float(args.rr),
                     sl_atr_buffer=float(args.sl_atr_buffer),
                     require_impulse_before_tdp=bool(args.require_impulse_before_tdp),
@@ -3430,6 +4057,15 @@ def main(argv: List[str] | None = None) -> int:
                     structural_ts_shadow_csv=structural_ts_shadow_csv,
                     pre_visible_entry_exposure_csv=pre_visible_entry_exposure_csv,
                     entry_model_pre_admission_csv=entry_model_pre_admission_csv,
+                    tdp_visible_assignment_trace_csv=tdp_visible_assignment_trace_csv,
+                    tdp_identity_resurfacing_trace_csv=tdp_identity_resurfacing_trace_csv,
+                    tdp_disappearance_trace_csv=tdp_disappearance_trace_csv,
+                    tdp_true_birth_trace_csv=tdp_true_birth_trace_csv,
+                    parity_filter_mode=str(args.parity_filter_mode or "NONE"),
+                    parity_filter_diagnostics_csv=parity_filter_diagnostics_csv,
+                    opportunity_manager_snapshot_csv=opportunity_manager_snapshot_csv,
+                    parity_range_width_pct_min=float(args.parity_range_width_pct_min),
+                    parity_distance_to_entry_R_min=float(args.parity_distance_to_entry_R_min),
                 )
                 cycle_written += written_for_symbol
 

@@ -31,7 +31,8 @@ from backtest.live.pipeline_helpers.normalization import (
 )
 from backtest.live.pipeline_helpers.schema import LIVE_ENTRIES_COLUMNS, _empty_entries_df
 
-from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter
+from backtest.filters.signal_cluster_filter import apply_signal_cluster_filter, cluster_filter_entries
+from backtest.filters.cluster_score_shadow_v2 import append_cluster_score_shadow_v2, shadow_score_v2_value, shadow_score_v3_tdp_only_value, shadow_score_v4a_range_wide_value, shadow_score_v4b_range_realistic_value, shadow_score_v4c_range_high_rr_penalty_value
 from backtest.live.phase_router import decide_phase
 from backtest.risk.portfolio_correlation_caps import _bucket as _corr_bucket  # type: ignore
 from backtest.journal.identity import _ensure_canonical_setup_key
@@ -172,6 +173,255 @@ def _append_pre_visible_entry_exposure_rows(
         if col not in out.columns:
             out[col] = ""
     out = out[PRE_VISIBLE_ENTRY_EXPOSURE_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+TDP_VISIBLE_ASSIGNMENT_TRACE_COLUMNS = [
+    "timestamp",
+    "cycle_ts",
+    "symbol",
+    "model",
+    "canonical_setup_key",
+    "setup_created_ts",
+    "candidate_ts",
+    "previous_visible_ts",
+    "assigned_visible_ts",
+    "assignment_reason",
+    "assignment_callsite",
+    "pre_assignment_death_stage",
+    "pre_assignment_death_reason",
+    "passed_wait",
+    "is_emitted",
+    "entry",
+    "sl",
+    "tp",
+    "distance_to_entry_R",
+    "entry_window_expires_ts",
+    "wait_confirm_ts",
+    "latest_ts",
+    "raw_candidate_count",
+    "pressure_window_id",
+    "pressure_window_age_bars",
+    "candidate_persistence_bars",
+]
+
+
+def _append_tdp_visible_assignment_trace_row(
+    path_like,
+    *,
+    entry,
+    symbol: str,
+    latest_ts: pd.Timestamp,
+    cycle_ts,
+    previous_visible_ts,
+    assigned_visible_ts,
+    assignment_reason: str,
+    assignment_callsite: str,
+    raw_candidate_count: int,
+) -> None:
+    """Telemetry-only trace for TDP visible_ts assignment.
+
+    This function copies fields only. It must not mutate candidate rows/objects
+    and must not influence ranking, wait, stale, idempotency, emission, execution,
+    lifecycle registry, or position state.
+    """
+    path = _pre_visible_path(path_like)
+    if path is None:
+        return
+
+    model = str(_pre_visible_get(entry, "model", "") or "")
+    if model != "TDP_REENTRY":
+        return
+
+    timestamp = _pre_visible_ts(_pre_visible_get(entry, "timestamp", pd.NaT))
+    setup_created_ts = _pre_visible_ts(_pre_visible_get(entry, "setup_created_ts", timestamp))
+    candidate_ts = _pre_visible_ts(_pre_visible_get(entry, "candidate_ts", timestamp))
+    latest_ts = _pre_visible_ts(latest_ts)
+    cycle_ts = _pre_visible_ts(cycle_ts)
+    if pd.isna(cycle_ts):
+        cycle_ts = latest_ts
+
+    canonical = str(_pre_visible_get(entry, "canonical_setup_key", "") or "")
+    if not canonical:
+        canonical = str(_pre_visible_get(entry, "setup_id", "") or "")
+
+    row = {
+        "timestamp": timestamp,
+        "cycle_ts": cycle_ts,
+        "symbol": str(_pre_visible_get(entry, "symbol", symbol) or symbol).upper(),
+        "model": model,
+        "canonical_setup_key": canonical,
+        "setup_created_ts": setup_created_ts,
+        "candidate_ts": candidate_ts,
+        "previous_visible_ts": _pre_visible_ts(previous_visible_ts),
+        "assigned_visible_ts": _pre_visible_ts(assigned_visible_ts),
+        "assignment_reason": str(assignment_reason or ""),
+        "assignment_callsite": str(assignment_callsite or ""),
+        "pre_assignment_death_stage": str(_pre_visible_get(entry, "death_stage", "") or ""),
+        "pre_assignment_death_reason": str(_pre_visible_get(entry, "death_reason", "") or ""),
+        "passed_wait": _pre_visible_get(entry, "passed_wait", ""),
+        "is_emitted": bool(_pre_visible_get(entry, "is_emitted", _pre_visible_get(entry, "emitted", False))),
+        "entry": _pre_visible_get(entry, "entry", ""),
+        "sl": _pre_visible_get(entry, "sl", ""),
+        "tp": _pre_visible_get(entry, "tp", ""),
+        "distance_to_entry_R": _pre_visible_get(entry, "distance_to_entry_R", ""),
+        "entry_window_expires_ts": _pre_visible_ts(_pre_visible_get(entry, "entry_window_expires_ts", pd.NaT)),
+        "wait_confirm_ts": _pre_visible_ts(_pre_visible_get(entry, "wait_confirm_ts", pd.NaT)),
+        "latest_ts": latest_ts,
+        "raw_candidate_count": int(raw_candidate_count),
+        "pressure_window_id": str(_pre_visible_get(entry, "pressure_window_id", "") or ""),
+        "pressure_window_age_bars": _pre_visible_get(entry, "pressure_window_age_bars", ""),
+        "candidate_persistence_bars": _pre_visible_get(entry, "candidate_persistence_bars", ""),
+    }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = pd.DataFrame([row])
+    for col in TDP_VISIBLE_ASSIGNMENT_TRACE_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[TDP_VISIBLE_ASSIGNMENT_TRACE_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
+TDP_IDENTITY_RESURFACING_TRACE_COLUMNS = [
+    "cycle_ts",
+    "latest_ts",
+    "symbol",
+    "model",
+    "side",
+    "canonical_setup_key",
+    "setup_id",
+    "setup_created_ts",
+    "candidate_ts",
+    "timestamp",
+    "entry",
+    "sl",
+    "tp",
+    "is_first_generator_seen",
+    "previous_generator_seen_ts",
+    "bars_since_previous_seen",
+    "generator_seen_count",
+    "raw_candidate_count",
+    "candidate_source",
+    "candidate_accept_reason",
+    "candidate_reject_reason",
+]
+
+
+TDP_IDENTITY_RESURFACING_SEEN = {}
+
+
+def _tdp_identity_resurfacing_key(symbol: str, entry) -> str:
+    canonical = str(_pre_visible_get(entry, "canonical_setup_key", "") or "")
+    if canonical:
+        return canonical
+    setup_id = str(_pre_visible_get(entry, "setup_id", "") or "")
+    if setup_id:
+        return setup_id
+    ts = _pre_visible_ts(_pre_visible_get(entry, "timestamp", pd.NaT))
+    side = str(_pre_visible_get(entry, "side", "") or "").upper()
+    return f"{str(symbol).upper()}|TDP_REENTRY|{side}|{ts}"
+
+
+def _append_tdp_identity_resurfacing_trace_rows(
+    path_like,
+    *,
+    entries,
+    symbol: str,
+    latest_ts: pd.Timestamp,
+    cycle_ts,
+) -> None:
+    """Telemetry-only TDP generator-output resurfacing trace.
+
+    This logger runs on entries returned by generate_entries_from_ctx(...)
+    before visible_ts assignment. It copies fields only and never influences
+    generation, ranking, wait, stale, idempotency, emission, execution,
+    lifecycle registry, or position state.
+    """
+    path = _pre_visible_path(path_like)
+    if path is None or not entries:
+        return
+
+    latest_ts = _pre_visible_ts(latest_ts)
+    cycle_ts = _pre_visible_ts(cycle_ts)
+    if pd.isna(cycle_ts):
+        cycle_ts = latest_ts
+
+    rows = []
+    raw_count = int(len(entries))
+    for entry in entries:
+        model = str(_pre_visible_get(entry, "model", "") or "")
+        if model != "TDP_REENTRY":
+            continue
+
+        key = _tdp_identity_resurfacing_key(symbol, entry)
+        prev_state = TDP_IDENTITY_RESURFACING_SEEN.get(key)
+        if prev_state is None:
+            is_first = True
+            previous_seen_ts = pd.NaT
+            bars_since_previous = ""
+            seen_count = 1
+        else:
+            is_first = False
+            previous_seen_ts = _pre_visible_ts(prev_state.get("last_seen_ts", pd.NaT))
+            seen_count = int(prev_state.get("count", 0) or 0) + 1
+            if pd.notna(previous_seen_ts) and pd.notna(latest_ts):
+                bars_since_previous = int(max(0, (latest_ts - previous_seen_ts).total_seconds() // (15 * 60)))
+            else:
+                bars_since_previous = ""
+
+        TDP_IDENTITY_RESURFACING_SEEN[key] = {
+            "last_seen_ts": latest_ts,
+            "count": seen_count,
+        }
+
+        timestamp = _pre_visible_ts(_pre_visible_get(entry, "timestamp", pd.NaT))
+        setup_created_ts = _pre_visible_ts(_pre_visible_get(entry, "setup_created_ts", timestamp))
+        candidate_ts = _pre_visible_ts(_pre_visible_get(entry, "candidate_ts", timestamp))
+        setup_id = str(_pre_visible_get(entry, "setup_id", "") or "")
+        canonical = str(_pre_visible_get(entry, "canonical_setup_key", "") or "")
+        if not canonical:
+            canonical = setup_id or key
+
+        rows.append({
+            "cycle_ts": cycle_ts,
+            "latest_ts": latest_ts,
+            "symbol": str(_pre_visible_get(entry, "symbol", symbol) or symbol).upper(),
+            "model": model,
+            "side": str(_pre_visible_get(entry, "side", "") or "").upper(),
+            "canonical_setup_key": canonical,
+            "setup_id": setup_id,
+            "setup_created_ts": setup_created_ts,
+            "candidate_ts": candidate_ts,
+            "timestamp": timestamp,
+            "entry": _pre_visible_get(entry, "entry", ""),
+            "sl": _pre_visible_get(entry, "sl", ""),
+            "tp": _pre_visible_get(entry, "tp", ""),
+            "is_first_generator_seen": bool(is_first),
+            "previous_generator_seen_ts": previous_seen_ts,
+            "bars_since_previous_seen": bars_since_previous,
+            "generator_seen_count": int(seen_count),
+            "raw_candidate_count": raw_count,
+            "candidate_source": "generate_entries_from_ctx",
+            "candidate_accept_reason": "returned_in_entries",
+            "candidate_reject_reason": "",
+        })
+
+    if not rows:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = pd.DataFrame(rows)
+    for col in TDP_IDENTITY_RESURFACING_TRACE_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[TDP_IDENTITY_RESURFACING_TRACE_COLUMNS]
     if not path.exists() or path.stat().st_size == 0:
         out.to_csv(path, index=False)
     else:
@@ -418,6 +668,8 @@ def run_pipeline_once(
         # entry generation signatures and returned entries remain unchanged.
         try:
             ctx_df.attrs["entry_model_pre_admission_csv"] = str(ctx.get("entry_model_pre_admission_csv", "") or "")
+            ctx_df.attrs["tdp_disappearance_trace_csv"] = str(ctx.get("tdp_disappearance_trace_csv", "") or "")
+            ctx_df.attrs["tdp_true_birth_trace_csv"] = str(ctx.get("tdp_true_birth_trace_csv", "") or "")
             ctx_df.attrs["cycle_ts"] = ctx.get("cycle_ts", ctx.get("latest_ts", pd.NaT))
             ctx_df.attrs["latest_ts"] = latest_ts
         except Exception:
@@ -439,6 +691,14 @@ def run_pipeline_once(
         print(f"[ENTRY_DIAG][{symbol}] raw_entries={len(entries)}")
         _append_pre_visible_entry_exposure_rows(
             ctx.get("pre_visible_entry_exposure_csv", ""),
+            entries=entries,
+            symbol=symbol,
+            latest_ts=latest_ts,
+            cycle_ts=ctx.get("cycle_ts", latest_ts),
+        )
+
+        _append_tdp_identity_resurfacing_trace_rows(
+            ctx.get("tdp_identity_resurfacing_trace_csv", ""),
             entries=entries,
             symbol=symbol,
             latest_ts=latest_ts,
@@ -500,15 +760,119 @@ def run_pipeline_once(
             # default behavior unchanged when no flag is provided
             if requested_mode == "SIGNAL_SCORE":
                 cluster_score = "SIGNAL_SCORE"
+            elif requested_mode == "SHADOW_SCORE_V2":
+                cluster_score = "SHADOW_SCORE_V2"
+            elif requested_mode == "SHADOW_SCORE_V3_TDP_ONLY":
+                cluster_score = "SHADOW_SCORE_V3_TDP_ONLY"
+            elif requested_mode == "SHADOW_SCORE_V4A_RANGE_WIDE":
+                cluster_score = "SHADOW_SCORE_V4A_RANGE_WIDE"
+            elif requested_mode == "SHADOW_SCORE_V4B_RANGE_REALISTIC":
+                cluster_score = "SHADOW_SCORE_V4B_RANGE_REALISTIC"
+            elif requested_mode == "SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY":
+                cluster_score = "SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY"
             else:
                 cluster_score = str(ctx.get("cluster_score", "RR") or "RR")
 
-            kept_entries, dropped_entries = apply_signal_cluster_filter(
-                entries,
-                max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
-                score=cluster_score,
-                phase=str(ph_pre or "") or None,
-            )
+            if cluster_score == "SHADOW_SCORE_V2":
+                try:
+                    _shadow_latest_close = float(candles_df["close"].iloc[-1])
+                except Exception:
+                    _shadow_latest_close = 0.0
+                _shadow_res = cluster_filter_entries(
+                    entries,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                    score_fn=lambda e: shadow_score_v2_value(
+                        e,
+                        cluster_score="SIGNAL_SCORE",
+                        latest_close=_shadow_latest_close,
+                    ),
+                    ranking_source="SHADOW_SCORE_V2",
+                )
+                kept_entries, dropped_entries = _shadow_res.kept, _shadow_res.dropped
+            elif cluster_score == "SHADOW_SCORE_V3_TDP_ONLY":
+                try:
+                    _shadow_latest_close = float(candles_df["close"].iloc[-1])
+                except Exception:
+                    _shadow_latest_close = 0.0
+                _shadow_res = cluster_filter_entries(
+                    entries,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                    score_fn=lambda e: shadow_score_v3_tdp_only_value(
+                        e,
+                        cluster_score="SIGNAL_SCORE",
+                        latest_close=_shadow_latest_close,
+                    ),
+                    ranking_source="SHADOW_SCORE_V3_TDP_ONLY",
+                )
+                kept_entries, dropped_entries = _shadow_res.kept, _shadow_res.dropped
+            elif cluster_score == "SHADOW_SCORE_V4A_RANGE_WIDE":
+                try:
+                    _shadow_latest_close = float(candles_df["close"].iloc[-1])
+                except Exception:
+                    _shadow_latest_close = 0.0
+                _shadow_res = cluster_filter_entries(
+                    entries,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                    score_fn=lambda e: shadow_score_v4a_range_wide_value(
+                        e,
+                        cluster_score="SIGNAL_SCORE",
+                        latest_close=_shadow_latest_close,
+                    ),
+                    ranking_source="SHADOW_SCORE_V4A_RANGE_WIDE",
+                )
+                kept_entries, dropped_entries = _shadow_res.kept, _shadow_res.dropped
+            elif cluster_score == "SHADOW_SCORE_V4B_RANGE_REALISTIC":
+                try:
+                    _shadow_latest_close = float(candles_df["close"].iloc[-1])
+                except Exception:
+                    _shadow_latest_close = 0.0
+                _shadow_res = cluster_filter_entries(
+                    entries,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                    score_fn=lambda e: shadow_score_v4b_range_realistic_value(
+                        e,
+                        cluster_score="SIGNAL_SCORE",
+                        latest_close=_shadow_latest_close,
+                    ),
+                    ranking_source="SHADOW_SCORE_V4B_RANGE_REALISTIC",
+                )
+                kept_entries, dropped_entries = _shadow_res.kept, _shadow_res.dropped
+            elif cluster_score == "SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY":
+                try:
+                    _shadow_latest_close = float(candles_df["close"].iloc[-1])
+                except Exception:
+                    _shadow_latest_close = 0.0
+                _shadow_res = cluster_filter_entries(
+                    entries,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                    score_fn=lambda e: shadow_score_v4c_range_high_rr_penalty_value(
+                        e,
+                        cluster_score="SIGNAL_SCORE",
+                        latest_close=_shadow_latest_close,
+                    ),
+                    ranking_source="SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY",
+                )
+                kept_entries, dropped_entries = _shadow_res.kept, _shadow_res.dropped
+            else:
+                kept_entries, dropped_entries = apply_signal_cluster_filter(
+                    entries,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                    score=cluster_score,
+                    phase=str(ph_pre or "") or None,
+                )
+            if bool(ctx.get("cluster_score_shadow_v2", False)):
+                append_cluster_score_shadow_v2(
+                    path_like=ctx.get("cluster_score_shadow_v2_csv", ""),
+                    candidate_entries=list(entries or []),
+                    production_kept=list(kept_entries or []),
+                    production_dropped=list(dropped_entries or []),
+                    candles_df=candles_df,
+                    cycle_ts=ctx.get("cycle_ts", latest_ts),
+                    latest_ts=latest_ts,
+                    symbol=symbol,
+                    cluster_score=cluster_score,
+                    max_per_group=int(ctx.get("cluster_max_per_group", 2) or 2),
+                )
             if debug:
                 print(
                     f"[CLUSTER_FILTER][{symbol}] "
@@ -532,6 +896,18 @@ def run_pipeline_once(
                 if isinstance(e, dict):
                     row = dict(e)
                     if row.get("visible_ts") is None:
+                        _append_tdp_visible_assignment_trace_row(
+                            ctx.get("tdp_visible_assignment_trace_csv", ""),
+                            entry=row,
+                            symbol=symbol,
+                            latest_ts=latest_ts,
+                            cycle_ts=ctx.get("cycle_ts", latest_ts),
+                            previous_visible_ts=row.get("visible_ts", pd.NaT),
+                            assigned_visible_ts=latest_ts,
+                            assignment_reason="visible_ts_missing_assigned_latest_ts",
+                            assignment_callsite="pipeline_core.dict_visible_ts_assignment",
+                            raw_candidate_count=len(entries),
+                        )
                         row["visible_ts"] = latest_ts
                     if row.get("pipeline_visible_ts") is None:
                         row["pipeline_visible_ts"] = latest_ts
@@ -539,6 +915,18 @@ def run_pipeline_once(
                 else:
                     try:
                         if getattr(e, "visible_ts", None) is None:
+                            _append_tdp_visible_assignment_trace_row(
+                                ctx.get("tdp_visible_assignment_trace_csv", ""),
+                                entry=e,
+                                symbol=symbol,
+                                latest_ts=latest_ts,
+                                cycle_ts=ctx.get("cycle_ts", latest_ts),
+                                previous_visible_ts=getattr(e, "visible_ts", pd.NaT),
+                                assigned_visible_ts=latest_ts,
+                                assignment_reason="visible_ts_missing_assigned_latest_ts",
+                                assignment_callsite="pipeline_core.object_visible_ts_assignment",
+                                raw_candidate_count=len(entries),
+                            )
                             setattr(e, "visible_ts", latest_ts)
                     except Exception:
                         pass
