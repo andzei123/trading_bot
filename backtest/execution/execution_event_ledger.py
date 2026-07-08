@@ -24,6 +24,7 @@ SIMULATED_FILLED = "SIMULATED_FILLED"
 SIMULATED_TIMEOUT_UNKNOWN = "SIMULATED_TIMEOUT_UNKNOWN"
 SIMULATED_EXCHANGE_UNAVAILABLE = "SIMULATED_EXCHANGE_UNAVAILABLE"
 RECOVERY_DECISION = "RECOVERY_DECISION"
+RESERVED_PRE_SUBMIT = "RESERVED_PRE_SUBMIT"
 
 SUPPORTED_EXECUTION_LEDGER_EVENTS = frozenset(
     {
@@ -38,6 +39,7 @@ SUPPORTED_EXECUTION_LEDGER_EVENTS = frozenset(
         SIMULATED_TIMEOUT_UNKNOWN,
         SIMULATED_EXCHANGE_UNAVAILABLE,
         RECOVERY_DECISION,
+        RESERVED_PRE_SUBMIT,
     }
 )
 
@@ -234,6 +236,10 @@ def rebuild_execution_state_snapshot(
         elif event.event_type == RECOVERY_DECISION:
             current_state = event.status or "RECOVERY_DECISION"
             block_new_orders = event.block_new_orders
+            requires_manual_review = event.requires_manual_review
+        elif event.event_type == RESERVED_PRE_SUBMIT:
+            current_state = "PRE_SUBMIT_RESERVED"
+            block_new_orders = True
             requires_manual_review = event.requires_manual_review
         else:  # pragma: no cover - append_event validates supported event types
             raise ExecutionEventLedgerError(f"unsupported execution ledger event type: {event.event_type}")
