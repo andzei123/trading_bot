@@ -49,6 +49,25 @@ from backtest.journal.identity import (
     _load_terminal_canonical_keys,
 )
 
+try:
+    from backtest.journal.live_journal_rotation_manager import (
+        DEFAULT_DESIGN_CSV as LIVE_ROTATION_DESIGN_CSV,
+        LiveJournalRotationManager,
+    )
+except Exception:
+    LIVE_ROTATION_DESIGN_CSV = Path("backtest/journal/live_journal_rotation_design.csv")
+    LiveJournalRotationManager = None
+
+try:
+    from backtest.journal.live_journal_rotation_controller import LiveJournalRotationController
+except Exception:
+    LiveJournalRotationController = None
+
+try:
+    from backtest.journal.live_rotation_plan_writer import append_live_rotation_plan_rows
+except Exception:
+    append_live_rotation_plan_rows = None
+
 BYBIT_REST = "https://api.bybit.com"
 
 FLOW_LOG_COLUMNS = [
@@ -409,6 +428,97 @@ PRESSURE_WINDOW_SUMMARY_COLUMNS = [
     "hindsight_window_high_ts",
     "hindsight_first_lower_high_after_window_high_ts",
     "hindsight_first_close_below_prev_low_after_window_high_ts",
+]
+
+OPPORTUNITY_MANAGER_SNAPSHOT_COLUMNS = [
+    "cycle_ts",
+    "symbol",
+    "latest_ts",
+    "candidate_ts",
+    "timestamp",
+    "signal_ts",
+    "model",
+    "side",
+    "setup_id",
+    "canonical_setup_key",
+    "setup_created_ts",
+    "visible_ts",
+    "entry_anchor_ts",
+    "wait_confirm_ts",
+    "intended_entry_ts",
+    "entry_window_expires_ts",
+    "entry",
+    "sl",
+    "tp",
+    "rr",
+    "phase",
+    "range_retest_score",
+    "setup_age_minutes",
+    "setup_age_bars",
+    "range_width_pct",
+    "entry_to_range_high_pct",
+    "entry_to_range_low_pct",
+    "target_distance_pct",
+    "stop_distance_pct",
+    "planned_rr",
+    "risk_pct",
+    "reward_pct",
+    "risk_distance",
+    "reward_distance",
+    "distance_to_entry_pct",
+    "distance_to_entry_R",
+    "raw_candidate_count",
+    "cluster_group_count",
+    "pressure_window_id",
+    "pressure_window_age_bars",
+    "pressure_window_duration_bars",
+    "pressure_window_peak_raw",
+    "candidate_persistence_bars",
+    "is_selected",
+    "selection_rank",
+    "selected_for_execution",
+    "execution_rank",
+    "selection_reason",
+    "rejected_reason",
+]
+
+
+AUTHORITY_WATERFALL_COLUMNS = [
+    "canonical_setup_key",
+    "symbol",
+    "model",
+    "side",
+    "setup_created_ts",
+    "candidate_ts",
+    "visible_ts",
+    "wait_confirm_ts",
+    "signal_ts",
+    "opened_ts",
+    "closed_ts",
+    "reached_created",
+    "reached_visible",
+    "reached_wait",
+    "reached_freshness",
+    "reached_executable",
+    "reached_opportunity_manager",
+    "reached_execution",
+    "reached_opened",
+    "terminal_stage",
+    "death_reason",
+    "planned_rr",
+    "risk_pct",
+    "reward_pct",
+    "distance_to_entry_R",
+    "distance_to_entry_pct",
+    "range_width_pct",
+    "setup_age_bars",
+    "candidate_persistence_bars",
+    "opened",
+    "close_reason",
+    "final_R_if_known",
+    "selected_for_execution",
+    "rejected_reason",
+    "execution_rank",
 ]
 
 
@@ -1169,6 +1279,140 @@ def _append_sniper_candidate_diag(path_like, rows: List[Dict[str, object]]) -> N
         out.to_csv(path, mode="a", header=False, index=False)
 
 
+def _opportunity_manager_snapshot_key(row: pd.Series) -> str:
+    canonical = str(row.get("canonical_setup_key", "") or "")
+    if canonical:
+        return canonical
+    setup_id = str(row.get("setup_id", "") or "")
+    if setup_id:
+        return setup_id
+    return "|".join([
+        str(row.get("symbol", "") or "").upper(),
+        str(row.get("model", "") or ""),
+        str(row.get("side", "") or "").upper(),
+        str(row.get("timestamp", row.get("candidate_ts", "")) or ""),
+    ])
+
+
+def _append_opportunity_manager_snapshot(
+    *,
+    executable_candidates_df: Optional[pd.DataFrame],
+    selected_df: Optional[pd.DataFrame],
+    output_csv_path: str,
+) -> None:
+    """Append opportunity-manager candidate snapshot telemetry only.
+
+    This helper copies fields from already-built candidate rows into an
+    append-only CSV and must never feed ranking, filtering, selection,
+    execution, risk, TP, SL, wait, stale, or idempotency logic.
+    """
+    path = _diag_path(output_csv_path)
+    if path is None or executable_candidates_df is None or executable_candidates_df.empty:
+        return
+
+    def _snapshot_is_blank(value: object) -> bool:
+        if value is None:
+            return True
+        try:
+            if pd.isna(value):
+                return True
+        except Exception:
+            pass
+        return str(value).strip() == ""
+
+    def _snapshot_first_present(row: pd.Series, names: List[str]):
+        for name in names:
+            if name not in row.index:
+                continue
+            value = row.get(name, "")
+            if not _snapshot_is_blank(value):
+                return value
+        return ""
+
+    def _snapshot_float(value: object):
+        try:
+            out = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        except Exception:
+            return None
+        if pd.isna(out):
+            return None
+        return float(out)
+
+    selected_keys: Set[str] = set()
+    if selected_df is not None and not selected_df.empty:
+        for _, selected_row in selected_df.iterrows():
+            selected_key = _opportunity_manager_snapshot_key(selected_row)
+            if selected_key:
+                selected_keys.add(selected_key)
+
+    rows: List[Dict[str, object]] = []
+    for rank, (_, candidate_row) in enumerate(executable_candidates_df.iterrows(), start=1):
+        key = _opportunity_manager_snapshot_key(candidate_row)
+        row = {col: "" for col in OPPORTUNITY_MANAGER_SNAPSHOT_COLUMNS}
+        for col in OPPORTUNITY_MANAGER_SNAPSHOT_COLUMNS:
+            if col in candidate_row.index:
+                row[col] = candidate_row.get(col, "")
+
+        candidate_ts = _snapshot_first_present(candidate_row, ["candidate_ts", "timestamp"])
+        timestamp = _snapshot_first_present(candidate_row, ["timestamp", "candidate_ts"])
+        row["candidate_ts"] = candidate_ts
+        row["timestamp"] = timestamp
+        row["signal_ts"] = _snapshot_first_present(candidate_row, ["signal_ts", "trade_open_ts", "opened_ts", "timestamp"])
+        row["setup_created_ts"] = _snapshot_first_present(candidate_row, ["setup_created_ts", "candidate_ts", "timestamp"])
+        row["visible_ts"] = _snapshot_first_present(candidate_row, ["visible_ts", "pipeline_visible_ts"])
+        row["entry"] = _snapshot_first_present(candidate_row, ["entry"])
+        row["sl"] = _snapshot_first_present(candidate_row, ["sl"])
+        row["tp"] = _snapshot_first_present(candidate_row, ["tp"])
+
+        if _snapshot_is_blank(row.get("planned_rr", "")):
+            row["planned_rr"] = _snapshot_first_present(candidate_row, ["rr"])
+
+        entry = _snapshot_float(row.get("entry", ""))
+        sl = _snapshot_float(row.get("sl", ""))
+        tp = _snapshot_float(row.get("tp", ""))
+        if entry is not None and sl is not None and tp is not None:
+            risk_distance = abs(entry - sl)
+            reward_distance = abs(tp - entry)
+            if risk_distance > 0 and entry != 0:
+                if _snapshot_is_blank(row.get("risk_distance", "")):
+                    row["risk_distance"] = risk_distance
+                if _snapshot_is_blank(row.get("reward_distance", "")):
+                    row["reward_distance"] = reward_distance
+                if _snapshot_is_blank(row.get("risk_pct", "")):
+                    row["risk_pct"] = risk_distance / abs(entry)
+                if _snapshot_is_blank(row.get("reward_pct", "")):
+                    row["reward_pct"] = reward_distance / abs(entry)
+                if _snapshot_is_blank(row.get("planned_rr", "")):
+                    row["planned_rr"] = reward_distance / risk_distance
+
+        selected_for_execution = bool(key and key in selected_keys)
+        row["is_selected"] = selected_for_execution
+        row["selected_for_execution"] = selected_for_execution
+        row["selection_rank"] = 1 if selected_for_execution else ""
+        row["execution_rank"] = 1 if selected_for_execution else ""
+        if selected_for_execution:
+            row["selection_reason"] = "selected"
+            row["rejected_reason"] = ""
+        elif selected_keys:
+            row["selection_reason"] = ""
+            row["rejected_reason"] = "lower_rank"
+        rows.append(row)
+
+    if not rows:
+        return
+
+    _ensure_parent(path)
+    out = pd.DataFrame(rows)
+    for col in OPPORTUNITY_MANAGER_SNAPSHOT_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[OPPORTUNITY_MANAGER_SNAPSHOT_COLUMNS]
+    if not path.exists() or path.stat().st_size == 0:
+        out.to_csv(path, index=False)
+    else:
+        out.to_csv(path, mode="a", header=False, index=False)
+
+
 def _append_sniper_candidate_outputs(
     *,
     sniper_candidate_diag_csv: str,
@@ -1604,6 +1848,73 @@ def _ensure_parent(path: Path) -> None:
 
 def _ensure_output_csv(path: Path) -> None:
     _ensure_parent(path)
+
+
+def _initialize_live_rotation_manager():
+    if LiveJournalRotationManager is None:
+        print("[LIVE_ROTATION] manager unavailable")
+        return None
+    try:
+        manager = LiveJournalRotationManager(LIVE_ROTATION_DESIGN_CSV)
+        count = manager.load()
+        status = manager.status() if hasattr(manager, "status") else "LOADED"
+        if status == "LOADED":
+            print(f"[LIVE_ROTATION] design loaded: {count} policies")
+            return manager
+        if Path(LIVE_ROTATION_DESIGN_CSV).exists():
+            error = getattr(manager, "error", "")
+            if error:
+                print(f"[LIVE_ROTATION] design load error: {error}")
+            else:
+                print("[LIVE_ROTATION] design load error: unknown")
+        else:
+            print("[LIVE_ROTATION] design not found")
+    except Exception as exc:
+        print(f"[LIVE_ROTATION] design load error: {exc}")
+    return None
+
+
+def _initialize_live_rotation_controller(rotation_manager):
+    if rotation_manager is None or LiveJournalRotationController is None:
+        return None
+    try:
+        return LiveJournalRotationController(rotation_manager)
+    except Exception:
+        return None
+
+
+def _observe_live_rotation_decisions(rotation_controller, *, cycle_ts, csv_paths: List[Path], debug: bool) -> None:
+    if not debug or rotation_controller is None:
+        return
+    for csv_path in csv_paths:
+        try:
+            result = rotation_controller.evaluate(Path(csv_path), cycle_ts)
+        except Exception as exc:
+            print(f"[LIVE_ROTATION] csv={Path(csv_path).name} policy=UNKNOWN restart=UNKNOWN decision=UNKNOWN_POLICY action=NONE error={type(exc).__name__}:{exc}")
+            continue
+        print(
+            "[LIVE_ROTATION] "
+            f"csv={result.get('csv', Path(csv_path).name)} "
+            f"policy={result.get('policy', 'UNKNOWN')} "
+            f"restart={result.get('restart', 'UNKNOWN')} "
+            f"decision={result.get('decision', 'UNKNOWN_POLICY')} "
+            f"action={result.get('action', 'NONE')}"
+        )
+
+
+def _write_live_rotation_plan(rotation_controller, rotation_manager, *, cycle_ts, csv_paths: List[Path], plan_csv: Path) -> None:
+    if rotation_controller is None or append_live_rotation_plan_rows is None:
+        return
+    try:
+        append_live_rotation_plan_rows(
+            Path(plan_csv),
+            rotation_controller=rotation_controller,
+            rotation_manager=rotation_manager,
+            cycle_ts=cycle_ts,
+            csv_paths=csv_paths,
+        )
+    except Exception:
+        return
 
 
 def _load_open_positions(position_state_csv: Path) -> Set[str]:
@@ -3093,6 +3404,7 @@ def run_symbol_once(
     parity_filter_mode: str = "NONE",
     parity_filter_diagnostics_csv: str = "",
     opportunity_manager_snapshot_csv: str = "",
+    authority_waterfall_csv: str = "",
     parity_range_width_pct_min: float = 0.0,
     parity_distance_to_entry_R_min: float = 0.5,
 ) -> int:
@@ -3745,9 +4057,26 @@ def run_symbol_once(
         _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
         return 0
 
+    opportunity_executable_df = out_df.copy()
+    opportunity_executable_df["cycle_ts"] = pd.to_datetime(cycle_ts, utc=True, errors="coerce")
+    opportunity_executable_df["latest_ts"] = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+    opportunity_executable_df["raw_candidate_count"] = int(flow_row.get("raw_entries_count", len(opportunity_executable_df)) or 0)
+    if "cluster_group_count" not in opportunity_executable_df.columns:
+        if "pressure_group_count" in opportunity_executable_df.columns:
+            opportunity_executable_df["cluster_group_count"] = opportunity_executable_df["pressure_group_count"]
+        else:
+            opportunity_executable_df["cluster_group_count"] = ""
+    if "cluster_score_mode" not in opportunity_executable_df.columns:
+        opportunity_executable_df["cluster_score_mode"] = str(cluster_score_mode or "")
+
     out_df = select_newest_live_candidate(out_df)
     flow_row["after_per_cycle_guard_count"] = int(len(out_df))
     flow_row["model_summary_after_per_cycle_guard"] = _series_summary(out_df, "model")
+    _append_opportunity_manager_snapshot(
+        executable_candidates_df=opportunity_executable_df,
+        selected_df=out_df,
+        output_csv_path=opportunity_manager_snapshot_csv,
+    )
     if out_df.empty:
         _write_state(state_path, latest_ts)
         print(f"[POST_DROP][{symbol}] stage=FINAL_SELECTION latest_ts={latest_ts}")
@@ -3956,6 +4285,7 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--parity_filter_mode", choices=sorted(PARITY_FILTER_MODES), default="NONE")
     ap.add_argument("--parity_filter_diagnostics_csv", default=None)
     ap.add_argument("--opportunity_manager_snapshot_csv", default=None)
+    ap.add_argument("--authority_waterfall_csv", default=None)
     ap.add_argument("--parity_range_width_pct_min", type=float, default=0.0)
     ap.add_argument("--parity_distance_to_entry_R_min", type=float, default=0.5)
 
@@ -3964,6 +4294,11 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--cluster_rank_signal_score", action="store_true")
     ap.add_argument("--cluster_score_shadow_v2", action="store_true")
     ap.add_argument("--cluster_score_shadow_v2_csv", default=None)
+    ap.add_argument(
+        "--live_rotation_plan_csv",
+        default="backtest/journal/live_rotation_plan.csv",
+        help="Observe-only live rotation planning CSV path",
+    )
 
     ap.add_argument("--rr", type=float, default=2.0)
     ap.add_argument("--sl_atr_buffer", type=float, default=0.15)
@@ -4000,9 +4335,13 @@ def main(argv: List[str] | None = None) -> int:
     tdp_true_birth_trace_csv = "" if args.tdp_true_birth_trace_csv is None else str(args.tdp_true_birth_trace_csv)
     parity_filter_diagnostics_csv = "" if args.parity_filter_diagnostics_csv is None else str(args.parity_filter_diagnostics_csv)
     opportunity_manager_snapshot_csv = "" if args.opportunity_manager_snapshot_csv is None else str(args.opportunity_manager_snapshot_csv)
+    authority_waterfall_csv = "" if args.authority_waterfall_csv is None else str(args.authority_waterfall_csv)
 
     _ensure_output_csv(out_csv)
     _ensure_parent(flow_log_csv)
+
+    live_rotation_manager = _initialize_live_rotation_manager()
+    live_rotation_controller = _initialize_live_rotation_controller(live_rotation_manager)
 
     total_written = 0
     consecutive_global_no_candles_cycles = 0
@@ -4010,6 +4349,34 @@ def main(argv: List[str] | None = None) -> int:
     last_successful_data_ts: Optional[pd.Timestamp] = None
 
     cluster_score_shadow_v2_csv = "" if args.cluster_score_shadow_v2_csv is None else str(args.cluster_score_shadow_v2_csv)
+    live_rotation_observed_csv_paths = [
+        path
+        for path in [
+            out_csv,
+            position_state_csv,
+            fired_setups_csv,
+            terminal_lifecycle_registry_csv,
+            flow_log_csv,
+            Path(str(args.candidate_pressure_csv)),
+            raw_candidate_diag_csv,
+            pressure_window_summary_csv,
+            sniper_candidate_diag_csv,
+            sniper_candidate_summary_csv,
+            tdp_stale_shadow_csv,
+            structural_ts_shadow_csv,
+            pre_visible_entry_exposure_csv,
+            entry_model_pre_admission_csv,
+            tdp_visible_assignment_trace_csv,
+            tdp_identity_resurfacing_trace_csv,
+            tdp_disappearance_trace_csv,
+            tdp_true_birth_trace_csv,
+            parity_filter_diagnostics_csv,
+            opportunity_manager_snapshot_csv,
+            authority_waterfall_csv,
+            cluster_score_shadow_v2_csv,
+        ]
+        if str(path).strip()
+    ]
     while True:
         cycle_written = 0
         cycle_ts = pd.Timestamp.now("UTC")
@@ -4064,6 +4431,7 @@ def main(argv: List[str] | None = None) -> int:
                     parity_filter_mode=str(args.parity_filter_mode or "NONE"),
                     parity_filter_diagnostics_csv=parity_filter_diagnostics_csv,
                     opportunity_manager_snapshot_csv=opportunity_manager_snapshot_csv,
+                    authority_waterfall_csv=authority_waterfall_csv,
                     parity_range_width_pct_min=float(args.parity_range_width_pct_min),
                     parity_distance_to_entry_R_min=float(args.parity_distance_to_entry_R_min),
                 )
@@ -4121,6 +4489,19 @@ def main(argv: List[str] | None = None) -> int:
                 },
                 ensure_ascii=False,
             )
+        )
+        _observe_live_rotation_decisions(
+            live_rotation_controller,
+            cycle_ts=cycle_ts,
+            csv_paths=live_rotation_observed_csv_paths,
+            debug=bool(args.debug),
+        )
+        _write_live_rotation_plan(
+            live_rotation_controller,
+            live_rotation_manager,
+            cycle_ts=cycle_ts,
+            csv_paths=live_rotation_observed_csv_paths,
+            plan_csv=Path(args.live_rotation_plan_csv),
         )
 
         if consecutive_global_no_candles_cycles >= int(args.max_global_no_candles_cycles):

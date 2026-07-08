@@ -104,6 +104,43 @@ PRIMARY_OUTPUT_SPECS: Dict[str, List[str]] = {
     "tdp_disappearance_trace.csv": [],
     "tdp_true_birth_trace.csv": [],
     "parity_filter_diagnostics.csv": [],
+    "authority_waterfall.csv": [
+        "canonical_setup_key",
+        "symbol",
+        "model",
+        "side",
+        "setup_created_ts",
+        "candidate_ts",
+        "visible_ts",
+        "wait_confirm_ts",
+        "signal_ts",
+        "opened_ts",
+        "closed_ts",
+        "reached_created",
+        "reached_visible",
+        "reached_wait",
+        "reached_freshness",
+        "reached_executable",
+        "reached_opportunity_manager",
+        "reached_execution",
+        "reached_opened",
+        "terminal_stage",
+        "death_reason",
+        "planned_rr",
+        "risk_pct",
+        "reward_pct",
+        "distance_to_entry_R",
+        "distance_to_entry_pct",
+        "range_width_pct",
+        "setup_age_bars",
+        "candidate_persistence_bars",
+        "opened",
+        "close_reason",
+        "final_R_if_known",
+        "selected_for_execution",
+        "rejected_reason",
+        "execution_rank",
+    ],
 }
 
 FLOW_PARITY_COLUMNS = [
@@ -194,6 +231,318 @@ def _read_csv_safe(path: Path) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
+
+
+def _build_authority_waterfall(
+    *,
+    out_dir: Path,
+    authority_waterfall_csv: Path,
+) -> None:
+    """Build base authority-waterfall identity telemetry post-replay only.
+
+    Patch 3 creates one row per canonical_setup_key found in existing replay
+    telemetry. It performs conservative lifecycle labeling only and is never
+    consumed by replay or trading logic.
+    """
+    columns = PRIMARY_OUTPUT_SPECS["authority_waterfall.csv"]
+    input_files = {
+        "entry_model_pre_admission": out_dir / "entry_model_pre_admission.csv",
+        "raw_candidate_lifecycle_diag": out_dir / "raw_candidate_lifecycle_diag.csv",
+        "flow_log": out_dir / "flow_log.csv",
+        "opportunity_manager_snapshot": out_dir / "opportunity_manager_snapshot.csv",
+        "position_state": out_dir / "position_state.csv",
+        "fired_setups": out_dir / "fired_setups.csv",
+        "terminal_lifecycle_registry": out_dir / "terminal_lifecycle_registry.csv",
+    }
+    inputs = {name: _read_csv_safe(path) for name, path in input_files.items()}
+
+    def _blank(value: object) -> bool:
+        try:
+            if pd.isna(value):
+                return True
+        except Exception:
+            pass
+        return str(value or "").strip() == "" or str(value).strip().lower() == "nan"
+
+    def _first_present(row: pd.Series, names: List[str]):
+        for name in names:
+            if name in row.index and not _blank(row.get(name, "")):
+                return row.get(name, "")
+        return ""
+
+    def _truthy(value: object) -> bool:
+        return str(value or "").strip().lower() in {"true", "1", "yes", "y"}
+
+    def _set_if_blank(target: Dict[str, object], field: str, value: object) -> None:
+        if field not in target or _blank(target.get(field, "")):
+            if not _blank(value):
+                target[field] = value
+
+    def _final_r_from_row(row: pd.Series):
+        for name in (
+            "final_R_if_known",
+            "R",
+            "final_R",
+            "realized_R",
+            "realized_r",
+            "pnl_R",
+            "pnl_r",
+            "outcome_R",
+            "outcome_r",
+            "result_R",
+            "result_r",
+            "total_R",
+            "total_r",
+        ):
+            if name in row.index and not _blank(row.get(name, "")):
+                return row.get(name, "")
+        return ""
+
+    def _flow_terminal_evidence(row: pd.Series):
+        death_stage = str(row.get("death_stage", "") or "").strip().lower()
+        death_reason = str(row.get("death_reason", "") or "").strip().lower()
+
+        if death_stage == "emitted":
+            return (5, "opened", "opened")
+        if death_stage == "position_gate" or death_reason in {
+            "open_position_exists",
+            "open_position_exists_at_intended_open_ts",
+        }:
+            return (4, "execution", "position_gate")
+        if death_stage == "idempotency" or death_reason == "already_fired":
+            return (3, "executable", "idempotency")
+        if death_stage == "stale" or death_reason == "stale_execution_window":
+            return (2, "freshness", "stale")
+        if death_stage == "wait_confirmation" or death_reason == "apply_wait_confirmation":
+            return (1, "wait", "wait_failed")
+        return None
+
+    def _terminal_registry_evidence(row: pd.Series):
+        fields = [
+            str(row.get("terminal_stage", "") or ""),
+            str(row.get("terminal_status", "") or ""),
+            str(row.get("lifecycle_state", "") or ""),
+            str(row.get("reason", "") or ""),
+        ]
+        text = " ".join(fields).strip().lower()
+        if not text:
+            return None
+
+        if "opened" in text:
+            return (5, "opened", "opened")
+        if "position_gate" in text or "open_position_exists" in text:
+            return (4, "execution", "position_gate")
+        if "idempotency" in text or "already_fired" in text or "duplicate" in text:
+            return (3, "executable", "idempotency")
+        if "stale" in text or "freshness" in text or "expired" in text:
+            return (2, "freshness", "stale")
+        if "wait_failed" in text or "apply_wait_confirmation" in text or ("wait" in text and "failed" in text):
+            return (1, "wait", "wait_failed")
+        return None
+
+    def _raw_lifecycle_evidence(row: pd.Series):
+        death_stage = str(row.get("death_stage", "") or "").strip().lower()
+        death_reason = str(row.get("death_reason", "") or "").strip().lower()
+
+        if death_reason in {"stale", "stale_execution_window"}:
+            return (2, "freshness", "stale")
+        if death_reason in {"wait_failed", "apply_wait_confirmation"}:
+            return (1, "wait", "wait_failed")
+        if death_reason == "already_fired":
+            return (3, "executable", "idempotency")
+        if death_reason in {"open_position_exists", "open_position_exists_at_intended_open_ts"}:
+            return (4, "execution", "position_gate")
+
+        # Conservative exact-stage fallbacks only. Do not map generic filtered,
+        # no_raw, pipeline_rows_0, or blank reasons in this patch.
+        if death_stage == "stale":
+            return (2, "freshness", "stale")
+        if death_stage == "wait_confirmation" and death_reason:
+            return (1, "wait", "wait_failed")
+        if death_stage == "idempotency" and death_reason:
+            return (3, "executable", "idempotency")
+        if death_stage == "position_gate" and death_reason:
+            return (4, "execution", "position_gate")
+        return None
+
+    def _apply_authority_evidence(row: Dict[str, object], terminal_stage: str, death_reason: str) -> None:
+        row["terminal_stage"] = terminal_stage
+        row["death_reason"] = death_reason
+
+        if death_reason == "wait_failed":
+            row["terminal_stage"] = "wait"
+        elif death_reason == "stale":
+            row["terminal_stage"] = "freshness"
+            row["reached_freshness"] = "False"
+        elif death_reason == "idempotency":
+            row["terminal_stage"] = "executable"
+            row["reached_executable"] = "True"
+        elif death_reason == "position_gate":
+            row["terminal_stage"] = "execution"
+            row["reached_executable"] = "True"
+            row["reached_opportunity_manager"] = "True"
+        elif death_reason == "opened":
+            row["terminal_stage"] = "opened"
+            row["reached_execution"] = "True"
+            row["reached_opened"] = "True"
+            row["opened"] = "True"
+
+    def _flow_sort_ts(row: pd.Series):
+        for name in ("cycle_ts", "latest_ts", "timestamp"):
+            if name in row.index:
+                ts = pd.to_datetime(row.get(name, pd.NaT), utc=True, errors="coerce")
+                if pd.notna(ts):
+                    return ts
+        return pd.Timestamp.max.tz_localize("UTC")
+
+    identities: Dict[str, Dict[str, object]] = {}
+    source_membership: Dict[str, set] = {}
+    for source_name, df in inputs.items():
+        if df.empty or "canonical_setup_key" not in df.columns:
+            continue
+        for _, src_row in df.iterrows():
+            key = str(src_row.get("canonical_setup_key", "") or "").strip()
+            if not key:
+                continue
+            row = identities.setdefault(key, {col: "" for col in columns})
+            source_membership.setdefault(key, set()).add(source_name)
+            row["canonical_setup_key"] = key
+
+            for field in (
+                "symbol",
+                "model",
+                "side",
+                "setup_created_ts",
+                "candidate_ts",
+                "visible_ts",
+                "wait_confirm_ts",
+                "signal_ts",
+                "opened_ts",
+                "closed_ts",
+                "planned_rr",
+                "risk_pct",
+                "reward_pct",
+                "distance_to_entry_R",
+                "distance_to_entry_pct",
+                "range_width_pct",
+                "setup_age_bars",
+                "candidate_persistence_bars",
+                "close_reason",
+                "selected_for_execution",
+                "rejected_reason",
+                "execution_rank",
+            ):
+                if field in src_row.index:
+                    _set_if_blank(row, field, src_row.get(field, ""))
+
+            _set_if_blank(row, "candidate_ts", _first_present(src_row, ["candidate_ts", "timestamp"]))
+            _set_if_blank(row, "setup_created_ts", _first_present(src_row, ["setup_created_ts", "candidate_ts", "timestamp"]))
+            _set_if_blank(row, "visible_ts", _first_present(src_row, ["visible_ts", "pipeline_visible_ts"]))
+            _set_if_blank(row, "wait_confirm_ts", _first_present(src_row, ["wait_confirm_ts"]))
+            _set_if_blank(row, "signal_ts", _first_present(src_row, ["signal_ts", "trade_open_ts", "opened_ts", "timestamp"]))
+
+            if source_name == "position_state":
+                _set_if_blank(row, "opened_ts", _first_present(src_row, ["opened_ts", "trade_open_ts"]))
+                _set_if_blank(row, "closed_ts", _first_present(src_row, ["closed_ts", "trade_close_ts"]))
+                _set_if_blank(row, "close_reason", _first_present(src_row, ["close_reason", "outcome", "exit_reason"]))
+                _set_if_blank(row, "final_R_if_known", _final_r_from_row(src_row))
+            elif source_name == "opportunity_manager_snapshot":
+                _set_if_blank(row, "final_R_if_known", _first_present(src_row, ["final_R_if_known"]))
+
+    flow_terminal_by_key: Dict[str, tuple] = {}
+    flow_log = inputs.get("flow_log", pd.DataFrame())
+    if not flow_log.empty and "canonical_setup_key" in flow_log.columns:
+        flow_log = flow_log.copy()
+        flow_log["_sort_ts"] = flow_log.apply(_flow_sort_ts, axis=1)
+        flow_log = flow_log.sort_values("_sort_ts", na_position="last")
+        for _, flow_row in flow_log.iterrows():
+            key = str(flow_row.get("canonical_setup_key", "") or "").strip()
+            if not key:
+                continue
+            evidence = _flow_terminal_evidence(flow_row)
+            if evidence is None:
+                continue
+            prev = flow_terminal_by_key.get(key)
+            if prev is None or int(evidence[0]) > int(prev[0]):
+                flow_terminal_by_key[key] = evidence
+
+    terminal_registry_by_key: Dict[str, tuple] = {}
+    terminal_registry = inputs.get("terminal_lifecycle_registry", pd.DataFrame())
+    if not terminal_registry.empty and "canonical_setup_key" in terminal_registry.columns:
+        for _, terminal_row in terminal_registry.iterrows():
+            key = str(terminal_row.get("canonical_setup_key", "") or "").strip()
+            if not key:
+                continue
+            evidence = _terminal_registry_evidence(terminal_row)
+            if evidence is None:
+                continue
+            prev = terminal_registry_by_key.get(key)
+            if prev is None or int(evidence[0]) > int(prev[0]):
+                terminal_registry_by_key[key] = evidence
+
+    raw_lifecycle_by_key: Dict[str, tuple] = {}
+    raw_lifecycle = inputs.get("raw_candidate_lifecycle_diag", pd.DataFrame())
+    if not raw_lifecycle.empty and "canonical_setup_key" in raw_lifecycle.columns:
+        for _, raw_row in raw_lifecycle.iterrows():
+            key = str(raw_row.get("canonical_setup_key", "") or "").strip()
+            if not key:
+                continue
+            evidence = _raw_lifecycle_evidence(raw_row)
+            if evidence is None:
+                continue
+            prev = raw_lifecycle_by_key.get(key)
+            if prev is None or int(evidence[0]) > int(prev[0]):
+                raw_lifecycle_by_key[key] = evidence
+
+    out_rows: List[Dict[str, object]] = []
+    for key in sorted(identities):
+        row = identities[key]
+        sources = source_membership.get(key, set())
+        reached_opportunity = "opportunity_manager_snapshot" in sources
+        reached_execution = _truthy(row.get("selected_for_execution", ""))
+        reached_opened = "position_state" in sources
+
+        row["reached_created"] = "True"
+        row["reached_visible"] = "True" if not _blank(row.get("visible_ts", "")) else "False"
+        row["reached_wait"] = "True" if not _blank(row.get("wait_confirm_ts", "")) else "False"
+        row["reached_freshness"] = ""
+        row["reached_executable"] = "True" if reached_opportunity else "False"
+        row["reached_opportunity_manager"] = "True" if reached_opportunity else "False"
+        row["reached_execution"] = "True" if reached_execution else "False"
+        row["reached_opened"] = "True" if reached_opened else "False"
+        row["opened"] = "True" if reached_opened else "False"
+
+        if reached_opened:
+            row["terminal_stage"] = "opened"
+            row["death_reason"] = "opened"
+        elif reached_execution:
+            row["terminal_stage"] = "opportunity_manager"
+            row["death_reason"] = "selected_not_opened"
+        elif reached_opportunity:
+            row["terminal_stage"] = "opportunity_manager"
+            row["death_reason"] = row.get("rejected_reason", "") if not _blank(row.get("rejected_reason", "")) else "not_selected"
+        else:
+            row["terminal_stage"] = "created"
+            row["death_reason"] = "unresolved_pre_opportunity"
+
+        if not reached_opened and key in flow_terminal_by_key:
+            _, flow_terminal_stage, flow_death_reason = flow_terminal_by_key[key]
+            _apply_authority_evidence(row, flow_terminal_stage, flow_death_reason)
+            if flow_death_reason == "wait_failed" and _blank(row.get("wait_confirm_ts", "")):
+                row["reached_wait"] = "False"
+            if flow_death_reason == "position_gate":
+                row["reached_execution"] = "False"
+        elif not reached_opened and key in terminal_registry_by_key:
+            _, terminal_stage, terminal_reason = terminal_registry_by_key[key]
+            _apply_authority_evidence(row, terminal_stage, terminal_reason)
+        elif not reached_opened and key in raw_lifecycle_by_key:
+            _, raw_stage, raw_reason = raw_lifecycle_by_key[key]
+            _apply_authority_evidence(row, raw_stage, raw_reason)
+
+        out_rows.append({col: row.get(col, "") for col in columns})
+
+    _ensure_parent(authority_waterfall_csv)
+    pd.DataFrame(out_rows, columns=columns).to_csv(authority_waterfall_csv, index=False)
 
 def _ensure_output_file(path: Path, expected_columns: List[str]) -> Path:
     """
@@ -315,6 +664,7 @@ def _verify_run_symbol_once_signature(shell: ModuleType) -> List[str]:
         "parity_filter_mode",
         "parity_filter_diagnostics_csv",
         "opportunity_manager_snapshot_csv",
+        "authority_waterfall_csv",
         "parity_range_width_pct_min",
         "parity_distance_to_entry_R_min",
     ]
@@ -446,6 +796,124 @@ def _build_lifecycle_snapshot(
     emits[PRIMARY_OUTPUT_SPECS["live_parity_lifecycle.csv"]].to_csv(lifecycle_csv, index=False)
 
 
+def _snapshot_blank(value: object) -> bool:
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    return str(value or "").strip() == "" or str(value).strip().lower() == "nan"
+
+
+def _snapshot_csv_value(value: object) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value or "")
+
+
+def _position_state_final_r(row: pd.Series):
+    for col in (
+        "R",
+        "final_R",
+        "realized_R",
+        "realized_r",
+        "pnl_R",
+        "pnl_r",
+        "outcome_R",
+        "outcome_r",
+        "result_R",
+        "result_r",
+        "total_R",
+        "total_r",
+    ):
+        if col in row.index and not _snapshot_blank(row.get(col, "")):
+            return row.get(col, "")
+    return ""
+
+
+def _enrich_opportunity_manager_snapshot_with_position_state(
+    *,
+    snapshot_csv: Path,
+    position_state_csv: Path,
+) -> None:
+    """Telemetry-only post-replay enrichment for opportunity manager snapshots.
+
+    Reads each input once, builds an in-memory position_state lookup keyed by
+    canonical_setup_key, and rewrites the snapshot once. The enriched snapshot is
+    not consumed by replay logic and cannot affect trading behavior.
+    """
+    if snapshot_csv is None or not Path(snapshot_csv).exists() or Path(snapshot_csv).stat().st_size == 0:
+        return
+    if position_state_csv is None or not Path(position_state_csv).exists() or Path(position_state_csv).stat().st_size == 0:
+        return
+
+    snapshot = _read_csv_safe(Path(snapshot_csv))
+    position_state = _read_csv_safe(Path(position_state_csv))
+    if snapshot.empty or "canonical_setup_key" not in snapshot.columns:
+        return
+
+    enrich_cols = [
+        "opened_in_position_state",
+        "opened_ts",
+        "closed_ts",
+        "close_reason",
+        "final_R_if_known",
+    ]
+    for col in enrich_cols:
+        if col not in snapshot.columns:
+            snapshot[col] = ""
+
+    if position_state.empty or "canonical_setup_key" not in position_state.columns:
+        snapshot["opened_in_position_state"] = "False"
+        snapshot.to_csv(snapshot_csv, index=False)
+        return
+
+    state = position_state.copy()
+    for col in ("opened_ts", "closed_ts"):
+        if col in state.columns:
+            state[col] = pd.to_datetime(state[col], utc=True, errors="coerce")
+        else:
+            state[col] = pd.NaT
+    if "close_reason" not in state.columns:
+        state["close_reason"] = ""
+
+    state["_final_R_if_known"] = state.apply(_position_state_final_r, axis=1)
+    sort_cols = [c for c in ("closed_ts", "opened_ts") if c in state.columns]
+    if sort_cols:
+        state = state.sort_values(sort_cols, na_position="last")
+    state = state.drop_duplicates(subset=["canonical_setup_key"], keep="last")
+    position_lookup = {
+        str(row.get("canonical_setup_key", "") or ""): row
+        for _, row in state.iterrows()
+        if str(row.get("canonical_setup_key", "") or "")
+    }
+
+    for idx, row in snapshot.iterrows():
+        key = str(row.get("canonical_setup_key", "") or "")
+        match = position_lookup.get(key)
+        if match is None:
+            snapshot.at[idx, "opened_in_position_state"] = "False"
+            continue
+
+        snapshot.at[idx, "opened_in_position_state"] = "True"
+        snapshot.at[idx, "opened_ts"] = _snapshot_csv_value(match.get("opened_ts", ""))
+        snapshot.at[idx, "closed_ts"] = _snapshot_csv_value(match.get("closed_ts", ""))
+        close_reason = _snapshot_csv_value(match.get("close_reason", "")).upper()
+        snapshot.at[idx, "close_reason"] = close_reason
+
+        if close_reason == "TP":
+            snapshot.at[idx, "final_R_if_known"] = _snapshot_csv_value(row.get("planned_rr", ""))
+        elif close_reason == "SL":
+            snapshot.at[idx, "final_R_if_known"] = "-1"
+        else:
+            snapshot.at[idx, "final_R_if_known"] = ""
+
+    snapshot.to_csv(snapshot_csv, index=False)
+
+
 def _print_flow_parity_snapshot(flow_log_csv: Path, symbol: str, replay_ts: pd.Timestamp) -> None:
     flow = _read_csv_safe(flow_log_csv)
     if flow.empty:
@@ -527,6 +995,7 @@ def run_live_parity_replay(
     parity_filter_mode: str,
     parity_filter_diagnostics_csv: str,
     opportunity_manager_snapshot_csv: str,
+    authority_waterfall_csv: str,
     parity_range_width_pct_min: float,
     parity_distance_to_entry_R_min: float,
     smoke_test: bool,
@@ -549,8 +1018,15 @@ def run_live_parity_replay(
     out_csv = _ensure_output_file(out_dir / "live_observation_entries.csv", PRIMARY_OUTPUT_SPECS["live_observation_entries.csv"])
     fired_csv = _ensure_output_file(out_dir / "fired_setups.csv", PRIMARY_OUTPUT_SPECS["fired_setups.csv"])
     position_state_csv = _ensure_output_file(out_dir / "position_state.csv", PRIMARY_OUTPUT_SPECS["position_state.csv"])
-    flow_log_csv = _ensure_output_file(out_dir / "flow_log.csv", PRIMARY_OUTPUT_SPECS["flow_log.csv"])
-    terminal_registry_csv = _ensure_output_file(out_dir / "terminal_lifecycle_registry.csv", PRIMARY_OUTPUT_SPECS["terminal_lifecycle_registry.csv"])
+    flow_log_csv = _ensure_output_file(
+        out_dir / "flow_log.csv",
+        PRIMARY_OUTPUT_SPECS["flow_log.csv"],
+    )
+
+    terminal_registry_csv = _ensure_output_file(
+        out_dir / "terminal_lifecycle_registry.csv",
+        PRIMARY_OUTPUT_SPECS["terminal_lifecycle_registry.csv"],
+    )
     lifecycle_csv = _ensure_output_file(out_dir / "live_parity_lifecycle.csv", PRIMARY_OUTPUT_SPECS["live_parity_lifecycle.csv"])
     summary_csv = _ensure_output_file(out_dir / "live_parity_summary.csv", PRIMARY_OUTPUT_SPECS["live_parity_summary.csv"])
     # Telemetry-only diagnostics. Omitted CLI args default into out_dir. These
@@ -608,6 +1084,12 @@ def run_live_parity_replay(
         Path(opportunity_manager_snapshot_csv)
         if opportunity_manager_snapshot_csv
         else (out_dir / "opportunity_manager_snapshot.csv")
+    )
+    authority_waterfall_csv_path = _ensure_output_file(
+        Path(authority_waterfall_csv)
+        if authority_waterfall_csv
+        else (out_dir / "authority_waterfall.csv"),
+        PRIMARY_OUTPUT_SPECS["authority_waterfall.csv"],
     )
     state_dir = out_dir / "live_observation_state"
     _ensure_parent(state_dir / "dummy.txt")
@@ -714,6 +1196,7 @@ def run_live_parity_replay(
                     "parity_filter_mode": str(parity_filter_mode or "NONE"),
                     "parity_filter_diagnostics_csv": str(parity_filter_diagnostics_csv_path),
                     "opportunity_manager_snapshot_csv": str(opportunity_manager_snapshot_csv_path),
+                    "authority_waterfall_csv": str(authority_waterfall_csv_path),
                     "parity_range_width_pct_min": float(parity_range_width_pct_min),
                     "parity_distance_to_entry_R_min": float(parity_distance_to_entry_R_min),
                 }
@@ -738,6 +1221,16 @@ def run_live_parity_replay(
             lifecycle_csv=lifecycle_csv,
             position_compatibility_ok=position_compatibility_ok,
             position_compatibility_message=position_compatibility_message,
+        )
+
+        _enrich_opportunity_manager_snapshot_with_position_state(
+            snapshot_csv=opportunity_manager_snapshot_csv_path,
+            position_state_csv=position_state_csv,
+        )
+
+        _build_authority_waterfall(
+            out_dir=out_dir,
+            authority_waterfall_csv=authority_waterfall_csv_path,
         )
 
         metrics["fired_setups_count"] = len(_read_csv_safe(fired_csv))
@@ -816,6 +1309,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--parity_filter_mode", choices=("NONE", "RANGE_AGE_3_5", "COMBINED_FINGERPRINT", "REMOVE_RANGE_AGE_1_2", "RANGE_GEOMETRY_P50"), default="NONE")
     ap.add_argument("--parity_filter_diagnostics_csv", default="")
     ap.add_argument("--opportunity_manager_snapshot_csv", default=None)
+    ap.add_argument("--authority_waterfall_csv", default=None)
     ap.add_argument("--parity_range_width_pct_min", type=float, default=0.0)
     ap.add_argument("--parity_distance_to_entry_R_min", type=float, default=0.5)
     ap.add_argument("--cluster_score_mode", choices=("LEGACY", "SIGNAL_SCORE", "SHADOW_SCORE_V2", "SHADOW_SCORE_V3_TDP_ONLY", "SHADOW_SCORE_V4A_RANGE_WIDE", "SHADOW_SCORE_V4B_RANGE_REALISTIC", "SHADOW_SCORE_V4C_RANGE_HIGH_RR_PENALTY"), default=None)
@@ -894,6 +1388,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         parity_filter_mode=str(args.parity_filter_mode or "NONE"),
         parity_filter_diagnostics_csv=str(args.parity_filter_diagnostics_csv or ""),
         opportunity_manager_snapshot_csv="" if args.opportunity_manager_snapshot_csv is None else str(args.opportunity_manager_snapshot_csv),
+        authority_waterfall_csv="" if args.authority_waterfall_csv is None else str(args.authority_waterfall_csv),
         parity_range_width_pct_min=float(args.parity_range_width_pct_min),
         parity_distance_to_entry_R_min=float(args.parity_distance_to_entry_R_min),
         smoke_test=bool(args.smoke_test),
