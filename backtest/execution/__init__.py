@@ -1,13 +1,20 @@
 """ATS downstream execution package.
 
-E1-E4 scope only: strict execution intent ingestion, deterministic dry-run
+E1-E5 scope only: strict execution intent ingestion, deterministic dry-run
 order build, decision consumption, append-only intent journaling, and
-executor-local mechanical safety checks. This package must not import or mutate live_observation_shell.py.
+executor-local mechanical safety checks, and session-local idempotency checks.
+This package must not import or mutate live_observation_shell.py.
 """
 
 from .intent import ExecutionIntent, IntentValidationError, load_intents_csv
 from .decision_consumer import DecisionConsumerError, ValidatedExecutionIntent, consume_decision, consume_decision_row
 from .intent_journal import IntentJournal, IntentJournalError, IntentJournalRecord, load_intent_journal
+from .execution_identity_registry import (
+    ExecutionIdentityRegistry,
+    ExecutionIdentityRegistryError,
+    IdempotencyResult,
+    check_execution_idempotency,
+)
 from .mechanical_safety_bridge import (
     BLOCK,
     CRITICAL,
@@ -39,4 +46,8 @@ __all__ = [
     "MechanicalSafetyBridgeError",
     "MechanicalSafetyResult",
     "check_mechanical_safety",
+    "ExecutionIdentityRegistry",
+    "ExecutionIdentityRegistryError",
+    "IdempotencyResult",
+    "check_execution_idempotency",
 ]
