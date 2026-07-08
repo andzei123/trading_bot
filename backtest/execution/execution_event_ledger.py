@@ -25,6 +25,11 @@ SIMULATED_TIMEOUT_UNKNOWN = "SIMULATED_TIMEOUT_UNKNOWN"
 SIMULATED_EXCHANGE_UNAVAILABLE = "SIMULATED_EXCHANGE_UNAVAILABLE"
 RECOVERY_DECISION = "RECOVERY_DECISION"
 RESERVED_PRE_SUBMIT = "RESERVED_PRE_SUBMIT"
+SUBMIT_ACK = "SUBMIT_ACK"
+SUBMIT_REJECT = "SUBMIT_REJECT"
+SUBMIT_TIMEOUT_UNKNOWN = "SUBMIT_TIMEOUT_UNKNOWN"
+SUBMIT_UNKNOWN = "SUBMIT_UNKNOWN"
+SUBMIT_BLOCKED = "SUBMIT_BLOCKED"
 
 SUPPORTED_EXECUTION_LEDGER_EVENTS = frozenset(
     {
@@ -40,11 +45,16 @@ SUPPORTED_EXECUTION_LEDGER_EVENTS = frozenset(
         SIMULATED_EXCHANGE_UNAVAILABLE,
         RECOVERY_DECISION,
         RESERVED_PRE_SUBMIT,
+        SUBMIT_ACK,
+        SUBMIT_REJECT,
+        SUBMIT_TIMEOUT_UNKNOWN,
+        SUBMIT_UNKNOWN,
+        SUBMIT_BLOCKED,
     }
 )
 
 _TERMINAL_EVENTS = frozenset({SIMULATED_FILLED, SIMULATED_REJECTED})
-_UNKNOWN_EVENTS = frozenset({SIMULATED_TIMEOUT_UNKNOWN, SIMULATED_EXCHANGE_UNAVAILABLE})
+_UNKNOWN_EVENTS = frozenset({SIMULATED_TIMEOUT_UNKNOWN, SIMULATED_EXCHANGE_UNAVAILABLE, SUBMIT_TIMEOUT_UNKNOWN, SUBMIT_UNKNOWN})
 
 
 @dataclass(frozen=True)
@@ -82,6 +92,10 @@ class ExecutionStateSnapshot:
     terminal: bool
     block_new_orders: bool
     requires_manual_review: bool
+    submit_state: str = ""
+    submit_confirmed: bool = False
+    submit_unknown: bool = False
+    terminal_submit_failure: bool = False
 
 
 class ExecutionEventLedger:
@@ -187,6 +201,10 @@ def rebuild_execution_state_snapshot(
             terminal=False,
             block_new_orders=False,
             requires_manual_review=False,
+            submit_state="NO_SUBMIT",
+            submit_confirmed=False,
+            submit_unknown=False,
+            terminal_submit_failure=False,
         )
 
     last_event_type = ""
@@ -196,6 +214,10 @@ def rebuild_execution_state_snapshot(
     terminal = False
     block_new_orders = False
     requires_manual_review = False
+    submit_state = "NO_SUBMIT"
+    submit_confirmed = False
+    submit_unknown = False
+    terminal_submit_failure = False
 
     for event in identity_events:
         last_event_type = event.event_type
@@ -241,6 +263,49 @@ def rebuild_execution_state_snapshot(
             current_state = "PRE_SUBMIT_RESERVED"
             block_new_orders = True
             requires_manual_review = event.requires_manual_review
+        elif event.event_type == SUBMIT_ACK:
+            current_state = "SUBMIT_ACK_CONFIRMED"
+            submit_state = "ACK_CONFIRMED"
+            submit_confirmed = True
+            submit_unknown = False
+            terminal_submit_failure = False
+            block_new_orders = True
+            requires_manual_review = event.requires_manual_review
+        elif event.event_type == SUBMIT_REJECT:
+            current_state = "SUBMIT_REJECT_TERMINAL"
+            submit_state = "REJECTED_TERMINAL"
+            submit_confirmed = False
+            submit_unknown = False
+            terminal_submit_failure = True
+            terminal = True
+            block_new_orders = event.block_new_orders
+            requires_manual_review = event.requires_manual_review
+        elif event.event_type == SUBMIT_TIMEOUT_UNKNOWN:
+            current_state = "SUBMIT_TIMEOUT_UNKNOWN"
+            submit_state = "TIMEOUT_UNKNOWN"
+            submit_confirmed = False
+            submit_unknown = True
+            terminal_submit_failure = False
+            has_unknown_state = True
+            block_new_orders = True
+            requires_manual_review = True
+        elif event.event_type == SUBMIT_UNKNOWN:
+            current_state = "SUBMIT_UNKNOWN"
+            submit_state = "UNKNOWN"
+            submit_confirmed = False
+            submit_unknown = True
+            terminal_submit_failure = False
+            has_unknown_state = True
+            block_new_orders = True
+            requires_manual_review = True
+        elif event.event_type == SUBMIT_BLOCKED:
+            current_state = "SUBMIT_BLOCKED"
+            submit_state = "BLOCKED_NOT_SUBMITTED"
+            submit_confirmed = False
+            submit_unknown = False
+            terminal_submit_failure = False
+            block_new_orders = event.block_new_orders
+            requires_manual_review = event.requires_manual_review
         else:  # pragma: no cover - append_event validates supported event types
             raise ExecutionEventLedgerError(f"unsupported execution ledger event type: {event.event_type}")
 
@@ -249,6 +314,8 @@ def rebuild_execution_state_snapshot(
         if event.event_type == SIMULATED_PARTIALLY_FILLED:
             has_partial_fill = True
         if event.event_type in _TERMINAL_EVENTS:
+            terminal = True
+        if event.event_type == SUBMIT_REJECT:
             terminal = True
 
     return ExecutionStateSnapshot(
@@ -261,6 +328,10 @@ def rebuild_execution_state_snapshot(
         terminal=terminal,
         block_new_orders=block_new_orders,
         requires_manual_review=requires_manual_review,
+        submit_state=submit_state,
+        submit_confirmed=submit_confirmed,
+        submit_unknown=submit_unknown,
+        terminal_submit_failure=terminal_submit_failure,
     )
 
 
