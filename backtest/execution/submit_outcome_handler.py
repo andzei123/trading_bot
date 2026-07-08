@@ -29,6 +29,9 @@ TESTNET_TIMEOUT_UNKNOWN = "TESTNET_TIMEOUT_UNKNOWN"
 TESTNET_SUBMIT_UNKNOWN = "TESTNET_SUBMIT_UNKNOWN"
 BLOCKED_NOT_SUBMITTED = "BLOCKED_NOT_SUBMITTED"
 
+TESTNET_ACK_CONFIRMED = "TESTNET_ACK_CONFIRMED"
+TESTNET_REJECT_CONFIRMED = "TESTNET_REJECT_CONFIRMED"
+
 
 @dataclass(frozen=True)
 class SubmitOutcomeLedgerEvent:
@@ -98,7 +101,7 @@ def classify_submit_outcome(submit_result: SubmitResult) -> SubmitOutcomeLedgerE
     side = submit_result.side
     client_order_id = submit_result.client_order_id
 
-    if status == TESTNET_ACK_SIMULATED:
+    if status in {TESTNET_ACK_SIMULATED, TESTNET_ACK_CONFIRMED}:
         return SubmitOutcomeLedgerEvent(
             canonical_setup_key=key,
             symbol=symbol,
@@ -111,7 +114,7 @@ def classify_submit_outcome(submit_result: SubmitResult) -> SubmitOutcomeLedgerE
             reason="TESTNET submit ack recorded; waiting for later fill/reconciliation layers",
         )
 
-    if status == TESTNET_REJECT_SIMULATED:
+    if status in {TESTNET_REJECT_SIMULATED, TESTNET_REJECT_CONFIRMED}:
         return SubmitOutcomeLedgerEvent(
             canonical_setup_key=key,
             symbol=symbol,
