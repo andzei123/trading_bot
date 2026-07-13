@@ -78,6 +78,7 @@ except Exception:
     LiveRotationIntegrationConfig = None
 
 from backtest.journal.live_rotation_authority import evaluate_rotation_authority
+from backtest.journal.live_rotation_readiness import evaluate_live_rotation_readiness
 
 BYBIT_REST = "https://api.bybit.com"
 
@@ -1894,7 +1895,7 @@ def _initialize_live_rotation_controller(rotation_manager):
         return None
 
 
-def _initialize_live_rotation_integration_boundary():
+def _initialize_live_rotation_integration_boundary(rotation_manager=None, rotation_controller=None):
     boundary = None
     integration_status = "INTEGRATION_BOUNDARY_UNAVAILABLE"
     if LiveRotationIntegrationBoundary is not None and LiveRotationIntegrationConfig is not None:
@@ -1912,6 +1913,15 @@ def _initialize_live_rotation_integration_boundary():
     )
     if authority_result.authorized:
         raise RuntimeError("R9 authority gate must never authorize production rotation")
+    evaluate_live_rotation_readiness(
+        integration_boundary=boundary,
+        authority_result=authority_result,
+        executor_reachable=False,
+        rotation_plan_path=Path("backtest/journal/live_rotation_plan.csv"),
+        rotation_policy_available=bool(getattr(rotation_manager, "design_rows", [])),
+        rotation_manager_initialized=rotation_manager is not None,
+        rotation_controller_initialized=rotation_controller is not None,
+    )
     return boundary
 
 
@@ -4374,7 +4384,9 @@ def main(argv: List[str] | None = None) -> int:
 
     live_rotation_manager = _initialize_live_rotation_manager()
     live_rotation_controller = _initialize_live_rotation_controller(live_rotation_manager)
-    live_rotation_integration_boundary = _initialize_live_rotation_integration_boundary()
+    live_rotation_integration_boundary = _initialize_live_rotation_integration_boundary(
+        live_rotation_manager, live_rotation_controller
+    )
 
     total_written = 0
     consecutive_global_no_candles_cycles = 0

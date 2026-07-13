@@ -1,0 +1,12 @@
+R10 SHELL DIFF JUSTIFICATION
+
+The shell change is localized to the existing R8/R9 integration boundary:
+
+1. one mandatory readiness evaluator import;
+2. two optional helper parameters for already initialized manager/controller;
+3. one immutable diagnostic evaluation after the mandatory authority DENY;
+4. the existing startup call passes those two already existing objects.
+
+No parser argument, cycle loop, telemetry schema, journal path, planning writer,
+Opportunity Manager, Authority Waterfall, trading, execution, replay, restart,
+or risk logic is modified.
