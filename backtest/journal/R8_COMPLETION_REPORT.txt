@@ -1,0 +1,34 @@
+ATS LIVE JOURNAL ROTATION R8 COMPLETION REPORT
+
+Stage: R8 — Production Integration Boundary
+
+Files created:
+- backtest/journal/live_rotation_integration.py
+- backtest/journal/smoke_r8.py
+- backtest/journal/R8_PRODUCTION_INTEGRATION_BOUNDARY.md
+- backtest/journal/R8_COMPLETION_REPORT.txt
+
+File modified:
+- backtest/journal/live_observation_shell.py
+
+Integration behavior:
+- default disabled
+- explicit enable reaches boundary only
+- executor imports: none
+- executor calls: zero
+- production filesystem mutation: zero
+
+Production behavior: UNCHANGED
+Rotation enabled: NO
+Executor executed: NO
+Compression: NO
+Retention: NO
+Scheduler: NO
+Replay impact: NONE
+Restart impact: NONE
+
+Shell diff justification:
+- one optional import block near existing rotation imports;
+- one small initialization helper near existing rotation helpers;
+- one startup call immediately after manager/controller initialization;
+- no parser, cycle loop, telemetry schema, write path, planning, or trading logic changes.

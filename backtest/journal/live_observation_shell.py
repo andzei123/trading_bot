@@ -68,6 +68,15 @@ try:
 except Exception:
     append_live_rotation_plan_rows = None
 
+try:
+    from backtest.journal.live_rotation_integration import (
+        LiveRotationIntegrationBoundary,
+        LiveRotationIntegrationConfig,
+    )
+except Exception:
+    LiveRotationIntegrationBoundary = None
+    LiveRotationIntegrationConfig = None
+
 BYBIT_REST = "https://api.bybit.com"
 
 FLOW_LOG_COLUMNS = [
@@ -1879,6 +1888,19 @@ def _initialize_live_rotation_controller(rotation_manager):
         return None
     try:
         return LiveJournalRotationController(rotation_manager)
+    except Exception:
+        return None
+
+
+def _initialize_live_rotation_integration_boundary():
+    if LiveRotationIntegrationBoundary is None or LiveRotationIntegrationConfig is None:
+        return None
+    try:
+        boundary = LiveRotationIntegrationBoundary(
+            LiveRotationIntegrationConfig.from_environment()
+        )
+        boundary.reach()
+        return boundary
     except Exception:
         return None
 
@@ -4342,6 +4364,7 @@ def main(argv: List[str] | None = None) -> int:
 
     live_rotation_manager = _initialize_live_rotation_manager()
     live_rotation_controller = _initialize_live_rotation_controller(live_rotation_manager)
+    live_rotation_integration_boundary = _initialize_live_rotation_integration_boundary()
 
     total_written = 0
     consecutive_global_no_candles_cycles = 0
