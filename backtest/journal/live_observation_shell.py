@@ -79,6 +79,7 @@ except Exception:
 
 from backtest.journal.live_rotation_authority import evaluate_rotation_authority
 from backtest.journal.live_rotation_readiness import evaluate_live_rotation_readiness
+from backtest.journal.live_rotation_recovery_state import classify_live_rotation_recovery_state
 
 BYBIT_REST = "https://api.bybit.com"
 
@@ -1913,7 +1914,7 @@ def _initialize_live_rotation_integration_boundary(rotation_manager=None, rotati
     )
     if authority_result.authorized:
         raise RuntimeError("R9 authority gate must never authorize production rotation")
-    evaluate_live_rotation_readiness(
+    readiness_result = evaluate_live_rotation_readiness(
         integration_boundary=boundary,
         authority_result=authority_result,
         executor_reachable=False,
@@ -1921,6 +1922,13 @@ def _initialize_live_rotation_integration_boundary(rotation_manager=None, rotati
         rotation_policy_available=bool(getattr(rotation_manager, "design_rows", [])),
         rotation_manager_initialized=rotation_manager is not None,
         rotation_controller_initialized=rotation_controller is not None,
+    )
+    classify_live_rotation_recovery_state(
+        integration_status=integration_status,
+        authority_result=authority_result,
+        readiness_result=readiness_result,
+        rotation_started=False,
+        executor_reached=False,
     )
     return boundary
 

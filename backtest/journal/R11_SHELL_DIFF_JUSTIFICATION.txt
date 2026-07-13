@@ -1,0 +1,23 @@
+R11 SHELL DIFF JUSTIFICATION
+
+The production shell change is localized to the existing rotation integration
+helper and one import.
+
+Added:
+1. One direct import of classify_live_rotation_recovery_state.
+2. Assignment of the existing readiness result to a local variable.
+3. One diagnostic-only recovery classification call immediately after readiness.
+
+Not changed:
+- parser arguments
+- main cycle loop
+- runtime timing
+- journal destinations
+- append/write behavior
+- planning writer behavior
+- telemetry schemas
+- Opportunity Manager
+- Authority Waterfall
+- strategy, ranking, WAIT, freshness, risk, execution, replay, restart
+
+The returned recovery object is not used to authorize or execute anything.
