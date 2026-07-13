@@ -1,0 +1,24 @@
+ATS LIVE JOURNAL ROTATION R9 REVISION 1 COMPLETION REPORT
+
+Scope: authority-integrity correction only.
+
+Files modified:
+- backtest/journal/live_observation_shell.py
+- backtest/journal/live_rotation_authority.py
+- backtest/journal/smoke_r9.py
+- backtest/journal/R9_AUTHORITY_GATE.md
+- backtest/journal/R9_COMPLETION_REPORT.txt
+- backtest/journal/R9_SHELL_DIFF_JUSTIFICATION.txt
+
+Corrections:
+- mandatory authority import
+- unconditional authority evaluation
+- boundary absence/error still evaluated
+- evaluation failure becomes structured DENY
+- unknown state becomes structured DENY
+
+Production rotation authorized: NO
+Executor executed: NO
+Production mutation: 0
+Runtime behavior: UNCHANGED
+Planning behavior: UNCHANGED

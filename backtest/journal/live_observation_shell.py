@@ -77,6 +77,8 @@ except Exception:
     LiveRotationIntegrationBoundary = None
     LiveRotationIntegrationConfig = None
 
+from backtest.journal.live_rotation_authority import evaluate_rotation_authority
+
 BYBIT_REST = "https://api.bybit.com"
 
 FLOW_LOG_COLUMNS = [
@@ -1893,16 +1895,24 @@ def _initialize_live_rotation_controller(rotation_manager):
 
 
 def _initialize_live_rotation_integration_boundary():
-    if LiveRotationIntegrationBoundary is None or LiveRotationIntegrationConfig is None:
-        return None
-    try:
-        boundary = LiveRotationIntegrationBoundary(
-            LiveRotationIntegrationConfig.from_environment()
-        )
-        boundary.reach()
-        return boundary
-    except Exception:
-        return None
+    boundary = None
+    integration_status = "INTEGRATION_BOUNDARY_UNAVAILABLE"
+    if LiveRotationIntegrationBoundary is not None and LiveRotationIntegrationConfig is not None:
+        try:
+            boundary = LiveRotationIntegrationBoundary(
+                LiveRotationIntegrationConfig.from_environment()
+            )
+            integration_status = boundary.reach()
+        except Exception:
+            integration_status = "INTEGRATION_BOUNDARY_ERROR"
+            boundary = None
+
+    authority_result = evaluate_rotation_authority(
+        integration_status=integration_status
+    )
+    if authority_result.authorized:
+        raise RuntimeError("R9 authority gate must never authorize production rotation")
+    return boundary
 
 
 def _observe_live_rotation_decisions(rotation_controller, *, cycle_ts, csv_paths: List[Path], debug: bool) -> None:

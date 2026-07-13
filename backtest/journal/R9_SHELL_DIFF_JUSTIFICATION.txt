@@ -1,0 +1,11 @@
+R9 REVISION 1 SHELL DIFF JUSTIFICATION
+
+Base: rejected R9 applied on approved R8 checkpoint.
+
+Only the authority import and `_initialize_live_rotation_integration_boundary()`
+were changed. Optional authority fallback was removed. The helper now always
+passes a status through the authority layer and retains the structured result.
+
+Parser, startup call site, cycle loop, planning, journal paths, CSV schemas,
+Opportunity Manager, Authority Waterfall, strategy, ranking, WAIT, freshness,
+risk, execution, restart, and replay are unchanged.
