@@ -1,0 +1,6 @@
+cycle_ts,csv_name,rotation_policy,restart_safety,decision,target_name,source_path,source_exists,simulation_result,simulated_action,reason
+2026-07-07T00:00:00+00:00,flow_log.csv,ROTATE_DAILY,SAFE,WOULD_ROTATE,flow_log_2026-07-07.csv,copied_journals/flow_log.csv,True,ACCEPTED,WOULD_ROTATE,SAFE WOULD_ROTATE row validated for simulation
+2026-07-07T00:00:00+00:00,position_state.csv,NEVER_ROTATE,CRITICAL,BLOCKED_CRITICAL,position_state.csv,copied_journals/position_state.csv,True,REJECTED_CRITICAL,NONE,CRITICAL journals are never executable
+2026-07-07T00:00:00+00:00,live_observation_entries.csv,ROTATE_AFTER_RUNTIME_VALIDATION,IMPORTANT,BLOCKED_IMPORTANT,live_observation_entries.csv,copied_journals/live_observation_entries.csv,True,REJECTED_IMPORTANT,NONE,IMPORTANT journals are not executable
+2026-07-07T00:00:00+00:00,unknown.csv,UNKNOWN,UNKNOWN,UNKNOWN_POLICY,unknown.csv,copied_journals/unknown.csv,True,REJECTED_UNKNOWN,NONE,restart safety is not SAFE
+2026-07-07T00:00:00+00:00,flow_log.csv,ROTATE_DAILY,SAFE,WOULD_ROTATE,flow_log_2026-07-07.csv,copied_journals/flow_log.csv,True,REJECTED_DUPLICATE,NONE,duplicate plan execution key
