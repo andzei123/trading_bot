@@ -1,0 +1,176 @@
+﻿{
+    "collected_at_utc":  "2026-07-15T20:05:09.4045429Z",
+    "collector_working_directory":  "C:\\Users\\Anjusik\\PythonProject",
+    "production_process_cwd":  "not proven",
+    "source_process_id":  2668,
+    "active_live_process":  [
+                                {
+                                    "ProcessId":  17904,
+                                    "ParentProcessId":  7856,
+                                    "CreationDate":  "\/Date(1784101399741)\/",
+                                    "ExecutablePath":  "C:\\Users\\Anjusik\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+                                    "CommandLine":  "\"C:\\Users\\Anjusik\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe\" -m backtest.journal.live_observation_shell --symbols BTCUSDT,ETHUSDT,XRPUSDT,SOLUSDT --out_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_observation_entries.csv --position_state_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\position_state.csv --fired_setups_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\fired_setups.csv --terminal_lifecycle_registry_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\terminal_lifecycle_registry.csv --flow_log_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\flow_log.csv --candidate_pressure_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\candidate_pressure.csv --raw_candidate_diag_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\raw_candidate_lifecycle_diag.csv --pressure_window_summary_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\pressure_window_summary.csv --sniper_candidate_diag_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_diag.csv --sniper_candidate_summary_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_summary.csv --opportunity_manager_snapshot_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\opportunity_manager_snapshot.csv --authority_waterfall_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\authority_waterfall.csv --live_rotation_plan_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_rotation_plan.csv --use_wait_confirmation --cluster_score_mode SHADOW_SCORE_V3_TDP_ONLY --cluster_max_per_group 2 --poll_seconds 15 --debug"
+                                },
+                                {
+                                    "ProcessId":  2668,
+                                    "ParentProcessId":  17904,
+                                    "CreationDate":  "\/Date(1784101399754)\/",
+                                    "ExecutablePath":  "C:\\Users\\Anjusik\\PythonProject\\.venv\\Scripts\\python.exe",
+                                    "CommandLine":  "C:\\Users\\Anjusik\\PythonProject\\.venv\\Scripts\\python.exe -m backtest.journal.live_observation_shell --symbols BTCUSDT,ETHUSDT,XRPUSDT,SOLUSDT --out_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_observation_entries.csv --position_state_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\position_state.csv --fired_setups_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\fired_setups.csv --terminal_lifecycle_registry_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\terminal_lifecycle_registry.csv --flow_log_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\flow_log.csv --candidate_pressure_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\candidate_pressure.csv --raw_candidate_diag_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\raw_candidate_lifecycle_diag.csv --pressure_window_summary_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\pressure_window_summary.csv --sniper_candidate_diag_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_diag.csv --sniper_candidate_summary_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_summary.csv --opportunity_manager_snapshot_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\opportunity_manager_snapshot.csv --authority_waterfall_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\authority_waterfall.csv --live_rotation_plan_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_rotation_plan.csv --use_wait_confirmation --cluster_score_mode SHADOW_SCORE_V3_TDP_ONLY --cluster_max_per_group 2 --poll_seconds 15 --debug"
+                                },
+                                {
+                                    "ProcessId":  19188,
+                                    "ParentProcessId":  2668,
+                                    "CreationDate":  "\/Date(1784101399761)\/",
+                                    "ExecutablePath":  "C:\\Users\\Anjusik\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+                                    "CommandLine":  "\"C:\\Users\\Anjusik\\AppData\\Local\\Programs\\Python\\Python312\\python.exe\" -m backtest.journal.live_observation_shell --symbols BTCUSDT,ETHUSDT,XRPUSDT,SOLUSDT --out_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_observation_entries.csv --position_state_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\position_state.csv --fired_setups_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\fired_setups.csv --terminal_lifecycle_registry_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\terminal_lifecycle_registry.csv --flow_log_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\flow_log.csv --candidate_pressure_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\candidate_pressure.csv --raw_candidate_diag_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\raw_candidate_lifecycle_diag.csv --pressure_window_summary_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\pressure_window_summary.csv --sniper_candidate_diag_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_diag.csv --sniper_candidate_summary_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_summary.csv --opportunity_manager_snapshot_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\opportunity_manager_snapshot.csv --authority_waterfall_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\authority_waterfall.csv --live_rotation_plan_csv backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_rotation_plan.csv --use_wait_confirmation --cluster_score_mode SHADOW_SCORE_V3_TDP_ONLY --cluster_max_per_group 2 --poll_seconds 15 --debug"
+                                }
+                            ],
+    "active_csv_paths":  [
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\authority_waterfall.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\candidate_pressure.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\fired_setups.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\flow_log.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_observation_entries.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_rotation_plan.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\opportunity_manager_snapshot.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\position_state.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\pressure_window_summary.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\raw_candidate_lifecycle_diag.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_diag.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_summary.csv",
+                             "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\terminal_lifecycle_registry.csv"
+                         ],
+    "files":  [
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\authority_waterfall.csv",
+                      "filename":  "authority_waterfall.csv",
+                      "exists":  false,
+                      "size_bytes":  null,
+                      "row_count":  0,
+                      "header":  null,
+                      "last_write_timestamp":  null,
+                      "parse_success":  false
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\candidate_pressure.csv",
+                      "filename":  "candidate_pressure.csv",
+                      "exists":  true,
+                      "size_bytes":  31906,
+                      "row_count":  707,
+                      "header":  "timestamp,symbol,raw_candidate_count,cluster_group_count,groups_gt1,groups_gt2,groups_gt3",
+                      "last_write_timestamp":  "2026-07-15T20:00:18.1909484Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\fired_setups.csv",
+                      "filename":  "fired_setups.csv",
+                      "exists":  true,
+                      "size_bytes":  967,
+                      "row_count":  2,
+                      "header":  "canonical_setup_key,setup_id,symbol,timestamp,setup_created_ts,wait_confirm_ts,wait_context_source,model,side,signal_ts,observed_ts,trade_open_ts,opened_ts,execution_ts_source,lifecycle_state",
+                      "last_write_timestamp":  "2026-07-14T12:00:12.4664171Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\flow_log.csv",
+                      "filename":  "flow_log.csv",
+                      "exists":  true,
+                      "size_bytes":  9012540,
+                      "row_count":  36624,
+                      "header":  "cycle_ts,symbol,latest_ts,setup_id,canonical_setup_key,lifecycle_state,model,side,setup_created_ts,wait_confirm_ts,wait_context_source,visible_ts,entry_anchor_ts,first_seen_ts,age_candles_at_first_seen,intended_entry_ts,entry_window_expires_ts,entry_delay_minutes,entry_timing_valid,execution_ts_source,trigger_refresh_candidate,trigger_refresh_reason,old_canonical_setup_key,original_setup_created_ts,candidate_latest_ts,range_retest_score,trigger_refresh_applied,age_minutes_at_first_seen,phase,model_summary_raw,model_summary_after_wait,after_freshness_count,model_summary_after_stale,model_summary_after_idempotency,model_summary_after_per_cycle_guard,sub_label_summary_raw,skipped_open_position,pipeline_zero_rows,raw_entries_count,after_wait_count,after_stale_count,after_idempotency_count,after_per_cycle_guard_count,emitted_count,notes,death_stage,death_reason,parity_filter_mode,parity_filter_stage,filter_input_rows,filter_missing_range_width_pct,filter_missing_distance_to_entry_R,filter_pass_rows,filter_reject_rows,filter_pass_then_emitted,filter_pass_then_wait_confirmation_death,filter_pass_then_stale_death,filter_pass_then_position_gate_death,stale_anchor_current_ts,stale_anchor_visible_ts,stale_anchor_wait_confirm_ts,stale_age_current_bars,stale_age_visible_bars,stale_age_wait_confirm_bars,stale_window_allowed_bars,current_stale_decision,visible_rebase_stale_decision,wait_rebase_stale_decision,would_pass_if_visible_rebased,would_pass_if_wait_rebased,stale_authority_disagreement,stale_disagreement_type",
+                      "last_write_timestamp":  "2026-07-15T20:04:55.5944025Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_observation_entries.csv",
+                      "filename":  "live_observation_entries.csv",
+                      "exists":  true,
+                      "size_bytes":  2594,
+                      "row_count":  2,
+                      "header":  "timestamp,signal_ts,visible_ts,pipeline_visible_ts,confirm_ts,model,side,entry,sl,tp,rr,ctx_sub_label,regime,trend_dir,trend_strength,atr_pct,phase,symbol,liq_bias,liq_risk_multiplier,risk_multiplier,block_reason,context_allow,macro_allow,macro_reason,macro_bias,macro_bias_mismatch,news_allow,news_reason,liq_allow,liq_reason,freeze_new_signals,setup_age_hours,setup_age_candles,setup_created_ts,canonical_setup_key,lifecycle_state,setup_id,trigger_refresh_candidate,trigger_refresh_reason,old_canonical_setup_key,original_setup_created_ts,candidate_latest_ts,range_retest_score,entry_anchor_ts,cycle_ts,pre_wait_live_execution_ts,wait_confirm_ts,wait_context_source,trigger_refresh_applied,intended_entry_ts,entry_window_expires_ts,entry_delay_minutes,trade_open_ts,opened_ts,execution_ts_source,entry_timing_valid,observed_ts,position_gate_reason,skipped_open_position",
+                      "last_write_timestamp":  "2026-07-14T12:00:12.4609176Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\live_rotation_plan.csv",
+                      "filename":  "live_rotation_plan.csv",
+                      "exists":  true,
+                      "size_bytes":  21033722,
+                      "row_count":  109836,
+                      "header":  "cycle_ts,csv_name,rotation_policy,retention_policy,compression_policy,restart_safety,decision,planned_action,target_name,notes",
+                      "last_write_timestamp":  "2026-07-15T20:04:55.5959074Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\opportunity_manager_snapshot.csv",
+                      "filename":  "opportunity_manager_snapshot.csv",
+                      "exists":  true,
+                      "size_bytes":  2036,
+                      "row_count":  2,
+                      "header":  "cycle_ts,symbol,latest_ts,candidate_ts,timestamp,signal_ts,model,side,setup_id,canonical_setup_key,setup_created_ts,visible_ts,entry_anchor_ts,wait_confirm_ts,intended_entry_ts,entry_window_expires_ts,entry,sl,tp,rr,phase,range_retest_score,setup_age_minutes,setup_age_bars,range_width_pct,entry_to_range_high_pct,entry_to_range_low_pct,target_distance_pct,stop_distance_pct,planned_rr,risk_pct,reward_pct,risk_distance,reward_distance,distance_to_entry_pct,distance_to_entry_R,raw_candidate_count,cluster_group_count,pressure_window_id,pressure_window_age_bars,pressure_window_duration_bars,pressure_window_peak_raw,candidate_persistence_bars,is_selected,selection_rank,selected_for_execution,execution_rank,selection_reason,rejected_reason",
+                      "last_write_timestamp":  "2026-07-14T12:00:12.4539142Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\position_state.csv",
+                      "filename":  "position_state.csv",
+                      "exists":  true,
+                      "size_bytes":  616,
+                      "row_count":  2,
+                      "header":  "symbol,canonical_setup_key,setup_id,setup_created_ts,signal_ts,opened_ts,status,closed_ts,close_reason,lifecycle_state",
+                      "last_write_timestamp":  "2026-07-14T12:30:00.7197442Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\pressure_window_summary.csv",
+                      "filename":  "pressure_window_summary.csv",
+                      "exists":  true,
+                      "size_bytes":  2100,
+                      "row_count":  7,
+                      "header":  "symbol,window_id,window_start,window_end,duration_bars,duration_minutes,max_raw_candidate_count,sum_raw_candidate_count,avg_raw_candidate_count,cluster_group_count_max,groups_gt1_any,groups_gt2_any,groups_gt3_any,emitted_count_inside_window,raw_candidate_count_inside_window,death_reason_counts_inside_window,first_candidate_ts,last_candidate_ts,hindsight_window_high,hindsight_window_high_ts,hindsight_first_lower_high_after_window_high_ts,hindsight_first_close_below_prev_low_after_window_high_ts",
+                      "last_write_timestamp":  "2026-07-15T19:15:11.5679100Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\raw_candidate_lifecycle_diag.csv",
+                      "filename":  "raw_candidate_lifecycle_diag.csv",
+                      "exists":  true,
+                      "size_bytes":  15466,
+                      "row_count":  16,
+                      "header":  "cycle_ts,symbol,latest_ts,candidate_ts,model,side,setup_id,canonical_setup_key,setup_created_ts,timestamp,visible_ts,entry_anchor_ts,wait_confirm_ts,intended_entry_ts,entry,sl,tp,rr,phase,range_retest_score,death_stage,death_reason,passed_wait,wait_bypassed,wait_bypass_scope,would_have_failed_wait,wait_shadow_decision,passed_stale,passed_idempotency,passed_position_gate,emitted,pressure_raw_count,pressure_group_count,inside_pressure_window,pressure_window_id,pressure_window_age_bars,pressure_window_duration_bars,pressure_window_peak_raw,setup_age_minutes,setup_age_bars,range_width_pct,entry_to_range_high_pct,entry_to_range_low_pct,target_distance_pct,stop_distance_pct,planned_rr,risk_pct,reward_pct,risk_distance,reward_distance,distance_to_entry_pct,distance_to_entry_R,stale_anchor_current_ts,stale_anchor_visible_ts,stale_anchor_wait_confirm_ts,stale_age_current_bars,stale_age_visible_bars,stale_age_wait_confirm_bars,stale_window_allowed_bars,current_stale_decision,visible_rebase_stale_decision,wait_rebase_stale_decision,would_pass_if_visible_rebased,would_pass_if_wait_rebased,stale_authority_disagreement,stale_disagreement_type,parity_filter_applied,parity_filter_passed,parity_filter_name,parity_filter_reason,parity_filter_stage,filter_range_width_pct,filter_distance_to_entry_R,filter_threshold_range_width_pct,filter_threshold_distance_to_entry_R",
+                      "last_write_timestamp":  "2026-07-15T19:15:11.5258885Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_diag.csv",
+                      "filename":  "sniper_candidate_diag.csv",
+                      "exists":  true,
+                      "size_bytes":  10777,
+                      "row_count":  16,
+                      "header":  "timestamp,symbol,setup_id,canonical_setup_key,candidate_ts,visible_ts,wait_confirm_ts,death_stage,death_reason,entry,sl,tp,raw_candidate_count,prev_raw_candidate_count,raw_count_delta,cluster_group_count,groups_gt1,groups_gt2,groups_gt3,pressure_window_id,pressure_window_age,pressure_window_age_bars,pressure_window_duration_bars,pressure_window_peak_raw,pressure_window_candidate_count,setup_age_minutes,setup_age_bars,range_width_pct,entry_to_range_high_pct,entry_to_range_low_pct,target_distance_pct,stop_distance_pct,planned_rr,risk_pct,reward_pct,risk_distance,reward_distance,distance_to_entry_pct,distance_to_entry_R,candidate_persistence_bars,is_candidate_expansion,is_candidate_flat,is_candidate_contraction,is_emitted,passed_wait,wait_bypassed,wait_bypass_scope,would_have_failed_wait,wait_shadow_decision,passed_stale,passed_idempotency,passed_position_gate",
+                      "last_write_timestamp":  "2026-07-15T19:15:11.5293943Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\sniper_candidate_summary.csv",
+                      "filename":  "sniper_candidate_summary.csv",
+                      "exists":  true,
+                      "size_bytes":  95,
+                      "row_count":  0,
+                      "header":  "symbol,model,death_stage,death_reason,candidate_expansion_state,candidate_count,emitted_count",
+                      "last_write_timestamp":  "2026-07-13T13:56:23.7958086Z",
+                      "parse_success":  true
+                  },
+                  {
+                      "absolute_path":  "C:\\Users\\Anjusik\\PythonProject\\backtest\\journal\\SHADOW_R11_REGRESSION_20260713_165605\\terminal_lifecycle_registry.csv",
+                      "filename":  "terminal_lifecycle_registry.csv",
+                      "exists":  true,
+                      "size_bytes":  1439,
+                      "row_count":  6,
+                      "header":  "canonical_setup_key,setup_id,symbol,model,side,setup_created_ts,terminal_stage,lifecycle_state,terminal_ts,reason",
+                      "last_write_timestamp":  "2026-07-14T12:30:00.7187452Z",
+                      "parse_success":  true
+                  }
+              ]
+}
