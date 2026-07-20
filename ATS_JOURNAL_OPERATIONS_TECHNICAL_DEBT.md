@@ -37,6 +37,21 @@ Baseline: `pressure_diag_logging` at `6cedff6` (`ATS_JOURNAL_ROTATION_R1_R11_REP
 | JO-TD-027 | MODERATE | Schema versions diverge across default and active directories | Default legacy versus active extended headers differ for position state, fired setups and live observation entries. Active files parse, but metadata parsing does not prove semantic compatibility across versions. | OPEN — document only |
 | JO-TD-028 | IMPORTANT | Position-state multi-writer schema contraction loses wait context | Writer A, `live_observation_shell._mark_position_open()`, writes 12 columns including `wait_confirm_ts` and `wait_context_source`. Writer B, `position_closer.close_symbol_if_hit()`, reduces to 10-column `POSITION_STATE_COLUMNS` and overwrites the same CSV, discarding those two fields. Active runtime header confirms the narrower schema. Entire position-record loss is not claimed. | OPEN — document only |
 
+## 2026-07-20 — J2 Journal Compaction Design
+
+J2 defines contracts only. “DESIGN ADDRESSED” means the risk has an explicit fail-closed design treatment; it does not mean implementation, runtime validation, or production authorization.
+
+| ID | Severity | Finding | Evidence / impact | Status |
+| --- | --- | --- | --- | --- |
+| JO-TD-029 | CRITICAL | Production writer quiescence and Windows handle proof are not implemented | Safe compaction requires a generation-token handshake, complete path-set acknowledgement, independently proven closed handles, stale-ack refusal, and new-generation resume. R7 disposable evidence does not prove the production writer protocol. | DESIGN ADDRESSED — implementation and certification required |
+| JO-TD-030 | CRITICAL | OPEN-position geometry retention requires a durable dependency index and pin validation | `position_closer` resolves side/SL/TP through `live_observation_entries.csv`; J2 additionally requires entry and planned RR preservation. Missing, conflicting, or ambiguous canonical/legacy matches must block compaction. | DESIGN ADDRESSED — implementation and runtime evidence required |
+| JO-TD-031 | IMPORTANT | Retention thresholds and hard resource ceilings are not evidence-approved | J1 does not establish growth/day, duplicate rates, RAM peaks, safe archive windows, or disk budgets. Arbitrary production retention values would be unsafe. | OPEN — policy values NOT AUTHORIZED |
+| JO-TD-032 | IMPORTANT | Deterministic active-path registry and writer-generation authority are absent | Current paths can be CLI-overridden and defaults depend on CWD; production process CWD is not proven. A compactor cannot safely infer active authority from filenames or defaults. | DESIGN ADDRESSED — control-plane implementation required |
+| JO-TD-033 | IMPORTANT | Crash-safe generation commit and recovery controller are unimplemented | Whole-file atomicity, durable commit markers, predecessor linkage, disk-full handling, and recovery across every state transition are not production-proven on Windows. | DESIGN ADDRESSED — implementation and crash certification required |
+| JO-TD-034 | IMPORTANT | Full-history consumers can invalidate otherwise safe source compaction | `_rebuild_pressure_window_summary()` and the closer perform complete-file reads with current semantics. Removing raw history without coordinated reader contracts could break summaries or OPEN-position closure. | DESIGN ADDRESSED — reader bounding/coordination required before enablement |
+| JO-TD-035 | MODERATE | External-memory identity, duplicate, and semantic-schema validation are not implemented | Exact duplicate/ambiguity detection and bounded-memory pin selection require disk-backed indexing/external sorting; metadata parser success is insufficient. | DESIGN ADDRESSED — implementation and scale validation required |
+| JO-TD-036 | MODERATE | Archive compression and source reclamation policy remain unauthorized | No deterministic compression codec/version, dual checksum convention, or separately certified deletion/reclamation lifecycle has been approved. | OPEN — no compression or reclamation authorized |
+
 ## Register rules
 
 - Preserve prior entries and IDs.
