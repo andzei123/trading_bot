@@ -82,6 +82,22 @@ J4 evidence labels are explicit. `OBSERVED` denotes supplied runtime/source evid
 | JO-TD-051 | IMPORTANT | Flow and candidate-pressure telemetry can grow without final admitted setups | Flow writes occur on numerous control branches; candidate pressure follows pipeline evaluation activity. Historical candidate pressure reached 200,581,278 bytes / 4,456,443 rows; J4 candidate paths grew 104,481 and 540 bytes respectively over 1,920.589 seconds. | OBSERVED historical and short candidate-path baselines; SOURCE-DERIVED driver — long-term rates unknown |
 | JO-TD-052 | MODERATE | Whole-file rewrite paths combine memory/IO amplification with corrupt-restart exposure | Position state, visibility cache, pressure summary and bounded candle snapshots serialize complete outputs. State/cache failures can affect restart authority; summary failures can leave stale output. | SOURCE-DERIVED — exact peak RAM, write duration and disk-full behavior unmeasured |
 
+## 2026-07-21 — J5 Operational Monitoring Design
+
+J5 defines monitoring contracts only. `DESIGN ADDRESSED` does not mean implemented, verified, production approved, or authorized to affect ATS behavior.
+
+| ID | Severity | Finding | Evidence / impact | Status |
+| --- | --- | --- | --- | --- |
+| JO-TD-053 | CRITICAL | Authenticated production path authority is unavailable to monitoring | Production process CWD remains not proven and repository-root resolution remains `CANDIDATE_BASE_NOT_PROVEN`. Existence, timestamps and directory names cannot authenticate authority. | DESIGN ADDRESSED — J3 generation-aware resolver implementation/evidence required |
+| JO-TD-054 | CRITICAL | Complete OPEN dependency health cannot be checked with bounded production IO | OPEN geometry can require lookup in unbounded `live_observation_entries.csv`; no implemented bounded pin/index supplies complete dependency evidence. | DESIGN ADDRESSED — report `CHECK_NOT_BOUNDED` / `NOT_AUTHORIZED` / `UNKNOWN` until implementation |
+| JO-TD-055 | IMPORTANT | Production monitoring resource ceilings are not evidence-approved | Per-file/cycle bytes, record size, files, samples, queue/state size, timeouts, CPU, RAM and handle caps need numeric configuration and validation. | DESIGN ADDRESSED — values `CONFIGURATION_REQUIRED` / `NOT_YET_AUTHORIZED` |
+| JO-TD-056 | IMPORTANT | Journal-specific freshness and alert thresholds lack approved provenance | Different writers have different event semantics; J4 short-window baselines cannot become production thresholds automatically. | DESIGN ADDRESSED — threshold registry and Lead approval required |
+| JO-TD-057 | IMPORTANT | Monitoring durable state and event retention are not implemented | Atomic publication, checksum, previous-generation recovery and bounded event retention are required to prevent stale or corrupt monitoring state from appearing healthy. | DESIGN ADDRESSED — implementation and crash/restart verification required |
+| JO-TD-058 | IMPORTANT | Windows non-exclusive probe safety is not runtime-verified | `FileShare.ReadWrite/Delete`, replacement races, reparse containment, antivirus/indexer interference and bounded timeouts require disposable and long-running Windows evidence. | DESIGN ADDRESSED — implementation/J6 verification required |
+| JO-TD-059 | MODERATE | Peak RAM, scan/cycle duration and process IO baselines remain incomplete | J4 measured current/sample-window process counters but not production peak RAM, full-history scan duration, shell cycle duration or optional process IO deltas. | OPEN — monitoring baseline evidence required |
+| JO-TD-060 | MODERATE | Monitor self-health cannot currently distinguish dead monitoring from stale healthy output | No implemented heartbeat, cycle-overrun, state-write, queue, resource or stale-output instrumentation exists. | DESIGN ADDRESSED — self-health implementation and independent liveness evidence required |
+| JO-TD-061 | MODERATE | External alert delivery ownership and escalation endpoints are undefined | J5 defines deterministic local alert records only; no notification adapter, recipient ownership or delivery verification is authorized. | OPEN — future interface/governance decision; no J5 notification execution |
+
 ## Register rules
 
 - Preserve prior entries and IDs.
