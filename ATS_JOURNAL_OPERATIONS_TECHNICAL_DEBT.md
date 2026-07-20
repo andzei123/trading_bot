@@ -52,6 +52,21 @@ J2 defines contracts only. “DESIGN ADDRESSED” means the risk has an explicit
 | JO-TD-035 | MODERATE | External-memory identity, duplicate, and semantic-schema validation are not implemented | Exact duplicate/ambiguity detection and bounded-memory pin selection require disk-backed indexing/external sorting; metadata parser success is insufficient. | DESIGN ADDRESSED — implementation and scale validation required |
 | JO-TD-036 | MODERATE | Archive compression and source reclamation policy remain unauthorized | No deterministic compression codec/version, dual checksum convention, or separately certified deletion/reclamation lifecycle has been approved. | OPEN — no compression or reclamation authorized |
 
+## 2026-07-20 — J3 Journal Directory Reconstruction
+
+J3 status vocabulary is explicit: `OBSERVED` is evidence of the current state; `DESIGN ADDRESSED` means a future fail-closed contract is documented; neither means `IMPLEMENTED`, `VALIDATED`, or `PRODUCTION APPROVED`.
+
+| ID | Severity | Finding | Evidence / impact | Status |
+| --- | --- | --- | --- | --- |
+| JO-TD-037 | CRITICAL | Current operational authority spans active CLI roots and hard-coded/default roots | The active shadow command redirects 13 CSV arguments, while `visible_ts_cache.csv` and candle snapshots remain hard-coded/default. Treating one directory as the complete active generation would omit restart or snapshot objects. | OBSERVED; DESIGN ADDRESSED — explicit generation registry/resolver required |
+| JO-TD-038 | CRITICAL | Authority dependency group cannot currently be committed as one directory generation | Position state, fired identities, terminal registry, visibility cache and live-entry geometry do not share one implemented generation pointer or atomic migration protocol. Mixed generations could break restart authority or OPEN closure. | OBSERVED; DESIGN ADDRESSED — implementation and certification required |
+| JO-TD-039 | IMPORTANT | Canonical CSV configuration and generated CSV output are obscured by broad ignore rules | `*.csv` and overlapping journal ignores protect runtime data but also require narrow exceptions for tracked canonical configuration such as `live_journal_rotation_design.csv`. Tracking intent is not expressed by file extension alone. | OBSERVED; DESIGN ADDRESSED — future `.gitignore` and clean-clone tests required |
+| JO-TD-040 | IMPORTANT | Fixed and derived production paths block safe directory-generation cutover | Hard-coded candle/cache paths, closer-derived terminal registry, fixed/default readers and CWD-relative CLI resolution do not consume one generation-aware registry. A physical move would split readers and writers. | OBSERVED; DESIGN ADDRESSED — shared resolver/compatibility implementation required |
+| JO-TD-041 | IMPORTANT | Canonical-looking duplicate files have no implemented authority marker | Default, active shadow, historical, audit, backup and manual-copy locations can contain identical filenames and divergent schemas. Filename and latest timestamp cannot establish authority. | OBSERVED; DESIGN ADDRESSED — predecessor-linked generation commit required |
+| JO-TD-042 | IMPORTANT | Windows path identity and reparse-point controls are not implemented | Case-insensitive collisions, case-only renames, junctions, symlinks, mount/reparse substitution, UNC paths and handle interference can redirect or split authority. | DESIGN ADDRESSED — Windows implementation and validation required |
+| JO-TD-043 | MODERATE | Stale dynamic candle snapshots can impersonate the active symbol set | BNB snapshot files may persist while the current command uses a different symbol set. Directory enumeration, existence and last-write time do not prove active ownership. | OBSERVED; DESIGN ADDRESSED — active-symbol registry and generation manifest required |
+| JO-TD-044 | IMPORTANT | Clean clone must reconstruct contracts without creating false live authority | Runtime CSVs and generation pointers must remain absent/ignored, while policies, schemas and directory contracts must be tracked. Initialization and fail-closed provisioning behavior are not implemented. | DESIGN ADDRESSED — clean-clone implementation tests required |
+
 ## Register rules
 
 - Preserve prior entries and IDs.
