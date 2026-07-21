@@ -1,0 +1,15 @@
+BASELINE HEAD
+7fae804dd9be76c1c25999f8babccfc3d6f27f1c
+7fae804 (HEAD -> feature/bybit-executor-e20, tag: ATS_EXECUTOR_E20_APPROVED, origin/feature/bybit-executor-e20) ATS Executor E20 safety inventory and authority audit
+
+DIFF CHECK
+EXIT_CODE=0
+
+COMPILE
+EXIT_CODE=0
+
+SMOKE
+[EXECUTOR_SHADOW_INTERNAL_ERROR][BTCUSDT] error_type=RuntimeError error=sentinel_executor_failure
+[EXECUTOR_SHADOW_INTERNAL_ERROR][BTCUSDT] error_type=RuntimeError error=sentinel_row_extraction_failure
+SMOKE_E21_2_OK validated_path=1 missing_rank_fail_closed=1 missing_selection_fail_closed=1 mechanical_veto=1 unexpected_internal_error_diagnostic=1 shell_continuation_guard=1 runtime_emit_after_executor_failure=1 runtime_emit_after_row_extraction_failure=1 deterministic=1 source_immutable=1 result_immutable=1 journal_mutation_sentinel=1 exchange_call_sentinel=1 gateway_import_sentinel=1 paper_executor_import_sentinel=1 single_boundary_call=1
+EXIT_CODE=0

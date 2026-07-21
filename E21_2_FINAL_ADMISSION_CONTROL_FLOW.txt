@@ -1,0 +1,121 @@
+ 4120:             r["parity_filter_stage"] = "pre_final_selection_pre_emission"
+ 4121:             r["filter_threshold_range_width_pct"] = float(parity_range_width_pct_min)
+ 4122:             r["filter_threshold_distance_to_entry_R"] = float(parity_distance_to_entry_R_min)
+ 4123:         _append_cycle_candidate_diags(marked)
+ 4124:         _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
+ 4125:         return 0
+ 4126:
+ 4127:     opportunity_executable_df = out_df.copy()
+ 4128:     opportunity_executable_df["cycle_ts"] = pd.to_datetime(cycle_ts, utc=True, errors="coerce")
+ 4129:     opportunity_executable_df["latest_ts"] = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+ 4130:     opportunity_executable_df["raw_candidate_count"] = int(flow_row.get("raw_entries_count", len(opportunity_executable_df)) or 0)
+ 4131:     if "cluster_group_count" not in opportunity_executable_df.columns:
+ 4132:         if "pressure_group_count" in opportunity_executable_df.columns:
+ 4133:             opportunity_executable_df["cluster_group_count"] = opportunity_executable_df["pressure_group_count"]
+ 4134:         else:
+ 4135:             opportunity_executable_df["cluster_group_count"] = ""
+ 4136:     if "cluster_score_mode" not in opportunity_executable_df.columns:
+ 4137:         opportunity_executable_df["cluster_score_mode"] = str(cluster_score_mode or "")
+ 4138:
+ 4139:     out_df = select_newest_live_candidate(out_df)
+ 4140:     flow_row["after_per_cycle_guard_count"] = int(len(out_df))
+ 4141:     flow_row["model_summary_after_per_cycle_guard"] = _series_summary(out_df, "model")
+ 4142:     _append_opportunity_manager_snapshot(
+ 4143:         executable_candidates_df=opportunity_executable_df,
+ 4144:         selected_df=out_df,
+ 4145:         output_csv_path=opportunity_manager_snapshot_csv,
+ 4146:     )
+ 4147:     if out_df.empty:
+ 4148:         _write_state(state_path, latest_ts)
+ 4149:         print(f"[POST_DROP][{symbol}] stage=FINAL_SELECTION latest_ts={latest_ts}")
+ 4150:         flow_row["notes"] = "died_in_final_selection"
+ 4151:         flow_row["death_stage"] = "final_selection"
+ 4152:         flow_row["death_reason"] = "select_newest_live_candidate"
+ 4153:         _append_flow_row(flow_log_csv, flow_row)
+ 4154:         _append_cycle_candidate_diags(
+ 4155:             _mark_raw_candidate_diag_rows(
+ 4156:                 raw_candidate_diag_rows,
+ 4157:                 wait_df=diag_wait_df,
+ 4158:                 idempotency_df=before_stale_df,
+ 4159:                 stale_df=out_df,
+ 4160:                 position_df=out_df,
+ 4161:                 death_stage="final_selection",
+ 4162:                 death_reason="select_newest_live_candidate",
+ 4163:             ),
+ 4164:         )
+ 4165:         _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
+ 4166:         return 0
+ 4167:
+ 4168:     out_df, position_gate_skipped = _filter_position_overlap_candidates(
+ 4169:         out_df=out_df,
+ 4170:         symbol=symbol,
+ 4171:         position_state_csv=position_state_csv,
+ 4172:         flow_log_csv=flow_log_csv,
+ 4173:         flow_row=flow_row,
+ 4174:     )
+ 4175:     flow_row["after_per_cycle_guard_count"] = int(len(out_df))
+ 4176:     flow_row["model_summary_after_per_cycle_guard"] = _series_summary(out_df, "model")
+ 4177:     if out_df.empty:
+ 4178:         _write_state(state_path, latest_ts)
+ 4179:         print(f"[POST_DROP][{symbol}] stage=POSITION_GATE latest_ts={latest_ts}")
+ 4180:         flow_row["skipped_open_position"] = True
+ 4181:         flow_row["notes"] = "blocked_by_open_position_at_intended_open_ts"
+ 4182:         flow_row["death_stage"] = "position_gate"
+ 4183:         flow_row["death_reason"] = "open_position_exists_at_intended_open_ts"
+ 4184:         flow_row["emitted_count"] = 0
+ 4185:         _append_flow_row(flow_log_csv, flow_row)
+ 4186:         _append_cycle_candidate_diags(
+ 4187:             _mark_raw_candidate_diag_rows(
+ 4188:                 raw_candidate_diag_rows,
+ 4189:                 wait_df=diag_wait_df,
+ 4190:                 idempotency_df=before_stale_df,
+ 4191:                 stale_df=out_df,
+ 4192:                 position_df=out_df,
+ 4193:                 death_stage="position_gate",
+ 4194:                 death_reason="open_position_exists_at_intended_open_ts",
+ 4195:             ),
+ 4196:         )
+ 4197:         _rebuild_pressure_window_summary(raw_candidate_diag_csv, pressure_window_summary_csv, candles_df, symbol)
+ 4198:         return 0
+ 4199:
+ 4200:     if position_gate_skipped > 0:
+ 4201:         flow_row["notes"] = f"position_gate_skipped={int(position_gate_skipped)}"
+ 4202:
+ 4203:     # Keep flow_log aligned with the exact final emitted row.
+ 4204:     if out_df is not None and not out_df.empty:
+ 4205:         final_row = out_df.iloc[0]
+ 4206:         if "setup_id" in out_df.columns:
+ 4207:             flow_row["setup_id"] = str(final_row.get("setup_id", ""))
+ 4208:         flow_row["canonical_setup_key"] = str(final_row.get("canonical_setup_key", ""))
+ 4209:         flow_row["model"] = str(final_row.get("model", ""))
+ 4210:         flow_row["side"] = str(final_row.get("side", "")).upper()
+ 4211:         flow_row["setup_created_ts"] = pd.to_datetime(final_row.get("setup_created_ts", final_row.get("timestamp")), utc=True, errors="coerce")
+ 4212:         flow_row["visible_ts"] = pd.to_datetime(final_row.get("visible_ts"), utc=True, errors="coerce")
+ 4213:         flow_row["entry_anchor_ts"] = pd.to_datetime(final_row.get("entry_anchor_ts"), utc=True, errors="coerce")
+ 4214:         flow_row["first_seen_ts"] = flow_row["visible_ts"]
+ 4215:         flow_row["trigger_refresh_candidate"] = bool(final_row.get("trigger_refresh_candidate", False))
+ 4216:         flow_row["trigger_refresh_reason"] = str(final_row.get("trigger_refresh_reason", ""))
+ 4217:         flow_row["old_canonical_setup_key"] = str(final_row.get("old_canonical_setup_key", ""))
+ 4218:         flow_row["original_setup_created_ts"] = pd.to_datetime(final_row.get("original_setup_created_ts"), utc=True, errors="coerce")
+ 4219:         flow_row["candidate_latest_ts"] = pd.to_datetime(final_row.get("candidate_latest_ts"), utc=True, errors="coerce")
+ 4220:         flow_row["range_retest_score"] = float(final_row.get("range_retest_score", 0.0) or 0.0)
+ 4221:         flow_row["trigger_refresh_applied"] = bool(final_row.get("trigger_refresh_applied", False))
+ 4222:
+ 4223:     written = _emit_with_optional_executor_shadow(
+ 4224:         out_csv=out_csv,
+ 4225:         symbol=symbol,
+ 4226:         latest_ts=latest_ts,
+ 4227:         out_df=out_df,
+ 4228:         cycle_ts=cycle_ts,
+ 4229:     )
+ 4230:     flow_row["emitted_count"] = int(written)
+ 4231:     if written > 0:
+ 4232:         out_df["lifecycle_state"] = LIFECYCLE_FIRED
+ 4233:     _append_fired_setup_ids(fired_setups_csv, out_df)
+ 4234:
+ 4235:     if written > 0:
+ 4236:         first = out_df.iloc[0]
+ 4237:         first_setup_id = str(first.get("setup_id", ""))
+ 4238:         first_canonical_key = str(first.get("canonical_setup_key", ""))
+ 4239:         _append_terminal_lifecycle_row(
+ 4240:             terminal_lifecycle_registry_csv,

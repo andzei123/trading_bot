@@ -1,0 +1,99 @@
+C:\Users\Anjusik\PythonProject\backtest\execution\decision_consumer.py:146:def consume_decision(intent: ExecutionIntent) -> ValidatedExecutionIntent:
+C:\Users\Anjusik\PythonProject\backtest\execution\decision_consumer.py:160:def consume_decision_row(row: Mapping[str, str]) -> ValidatedExecutionIntent:
+C:\Users\Anjusik\PythonProject\backtest\execution\decision_consumer.py:164:intent = ExecutionIntent.from_row(dict(row))
+C:\Users\Anjusik\PythonProject\backtest\execution\decision_consumer.py:167:return consume_decision(intent)
+C:\Users\Anjusik\PythonProject\backtest\execution\e1_dry_run.py:24:intent = ExecutionIntent.from_row(row)
+C:\Users\Anjusik\PythonProject\backtest\execution\end_to_end_testnet_drill.py:19:from .mechanical_safety_bridge import check_mechanical_safety
+C:\Users\Anjusik\PythonProject\backtest\execution\end_to_end_testnet_drill.py:23:from .testnet_command_gateway import MODE_TESTNET, TestnetCommandGateway
+C:\Users\Anjusik\PythonProject\backtest\execution\end_to_end_testnet_drill.py:108:safety = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\backtest\execution\end_to_end_testnet_drill.py:166:command = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=self.manual_enable).prepare_command(
+C:\Users\Anjusik\PythonProject\backtest\execution\intent.py:183:return [ExecutionIntent.from_row(row) for row in csv.DictReader(handle)]
+C:\Users\Anjusik\PythonProject\backtest\execution\intent.py:187:return [ExecutionIntent.from_row(row) for row in rows]
+C:\Users\Anjusik\PythonProject\backtest\execution\mechanical_safety_bridge.py:72:def check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\backtest\execution\paper_executor.py:36:from .mechanical_safety_bridge import MechanicalSafetyResult, check_mechanical_safety
+C:\Users\Anjusik\PythonProject\backtest\execution\paper_executor.py:41:class PaperExecutorError(ValueError):
+C:\Users\Anjusik\PythonProject\backtest\execution\paper_executor.py:74:class PaperExecutor:
+C:\Users\Anjusik\PythonProject\backtest\execution\paper_executor.py:96:raise PaperExecutorError("PaperExecutor requires ExecutionEventLedger")
+C:\Users\Anjusik\PythonProject\backtest\execution\paper_executor.py:122:raise PaperExecutorError("paper executor accepts only ValidatedExecutionIntent")
+C:\Users\Anjusik\PythonProject\backtest\execution\paper_executor.py:133:safety = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\backtest\execution\shadow_integration_boundary.py:6:from .decision_consumer import DecisionConsumerError, consume_decision
+C:\Users\Anjusik\PythonProject\backtest\execution\shadow_integration_boundary.py:10:check_mechanical_safety,
+C:\Users\Anjusik\PythonProject\backtest\execution\shadow_integration_boundary.py:37:def evaluate_ats_shadow_admission(
+C:\Users\Anjusik\PythonProject\backtest\execution\shadow_integration_boundary.py:66:intent = ExecutionIntent.from_row(intent_row)
+C:\Users\Anjusik\PythonProject\backtest\execution\shadow_integration_boundary.py:67:validated = consume_decision(intent)
+C:\Users\Anjusik\PythonProject\backtest\execution\shadow_integration_boundary.py:68:mechanical = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\backtest\execution\testnet_command_gateway.py:49:class TestnetCommandGateway:
+C:\Users\Anjusik\PythonProject\backtest\execution\testnet_real_submit.py:17:from .testnet_command_gateway import CommandDecision, MODE_LIVE, MODE_TESTNET
+C:\Users\Anjusik\PythonProject\backtest\execution\testnet_submit_adapter.py:8:from .testnet_command_gateway import CommandDecision, MODE_LIVE, MODE_TESTNET, deterministic_testnet_client_order_id
+C:\Users\Anjusik\PythonProject\backtest\execution\__init__.py:10:from .decision_consumer import DecisionConsumerError, ValidatedExecutionIntent, consume_decision, consume_decision_row
+C:\Users\Anjusik\PythonProject\backtest\execution\__init__.py:24:check_mechanical_safety,
+C:\Users\Anjusik\PythonProject\backtest\execution\__init__.py:34:"consume_decision",
+C:\Users\Anjusik\PythonProject\backtest\execution\__init__.py:35:"consume_decision_row",
+C:\Users\Anjusik\PythonProject\backtest\execution\__init__.py:48:"check_mechanical_safety",
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:14:import backtest.execution.shadow_integration_boundary as boundary
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:15:from backtest.execution.shadow_integration_boundary import evaluate_ats_shadow_admission
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:22:"backtest.execution.testnet_real_submit",
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:110:with patch.object(boundary, "evaluate_ats_shadow_admission", side_effect=_unexpected_failure):
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:151:first = evaluate_ats_shadow_admission(row, **kwargs)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:152:second = evaluate_ats_shadow_admission(row, **kwargs)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:160:blocked_rank = evaluate_ats_shadow_admission(missing_rank, **kwargs)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:166:blocked_selection = evaluate_ats_shadow_admission(missing_selection, **kwargs)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:172:veto = evaluate_ats_shadow_admission(expired, **kwargs)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:178:internal_error = evaluate_ats_shadow_admission(_row(), **kwargs)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:203:assert shell_source.count("evaluate_ats_shadow_admission(") == 1
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:208:import_index = shell_source.index("from backtest.execution.shadow_integration_boundary import", extraction_index)
+C:\Users\Anjusik\PythonProject\backtest\execution\tests\smoke_e21.py:209:hook_index = shell_source.index("evaluate_ats_shadow_admission(", import_index)
+C:\Users\Anjusik\PythonProject\backtest\journal\live_observation_shell.py:2369:from backtest.execution.shadow_integration_boundary import (
+C:\Users\Anjusik\PythonProject\backtest\journal\live_observation_shell.py:2370:evaluate_ats_shadow_admission,
+C:\Users\Anjusik\PythonProject\backtest\journal\live_observation_shell.py:2373:shadow_result = evaluate_ats_shadow_admission(
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:8:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:20:from backtest.execution.paper_executor import PaperExecutionRequest, PaperExecutor
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:74:def make_executor(tmp_path: Path) -> PaperExecutor:
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:75:return PaperExecutor(
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:100:filled_intent = consume_decision_row(filled_row)
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:108:timeout_intent = consume_decision_row(valid_row(timeout_key, symbol="ETHUSDT"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:112:partial_intent = consume_decision_row(valid_row(partial_key, symbol="BTCUSDT"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e11.py:116:rejected_intent = consume_decision_row(valid_row(rejected_key, symbol="SOLUSDT", side="SHORT"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:11:from backtest.execution.testnet_command_gateway import (
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:20:TestnetCommandGateway,
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:89:gateway = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=True)
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:103:read_only_block = TestnetCommandGateway(mode=MODE_READ_ONLY, manual_enable=True).prepare_command(
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:109:live_block = TestnetCommandGateway(mode=MODE_LIVE, manual_enable=True).prepare_command(
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:115:reconciliation_block = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=True).prepare_command(
+C:\Users\Anjusik\PythonProject\tests\smoke_e14.py:121:manual_block = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=False).prepare_command(
+C:\Users\Anjusik\PythonProject\tests\smoke_e15.py:11:from backtest.execution.testnet_command_gateway import MODE_LIVE, MODE_READ_ONLY, MODE_TESTNET, CommandDecision, TestnetCommandGateway
+C:\Users\Anjusik\PythonProject\tests\smoke_e15.py:78:gateway = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=True)
+C:\Users\Anjusik\PythonProject\tests\smoke_e16.py:21:from backtest.execution.testnet_command_gateway import MODE_TESTNET
+C:\Users\Anjusik\PythonProject\tests\smoke_e17.py:12:from backtest.execution.testnet_command_gateway import CommandDecision, MODE_LIVE, MODE_READ_ONLY, MODE_TESTNET
+C:\Users\Anjusik\PythonProject\tests\smoke_e17.py:13:from backtest.execution.testnet_real_submit import (
+C:\Users\Anjusik\PythonProject\tests\smoke_e19.py:9:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e19.py:27:from backtest.execution.testnet_command_gateway import MODE_TESTNET, TestnetCommandGateway
+C:\Users\Anjusik\PythonProject\tests\smoke_e19.py:90:return consume_decision_row(_row(key))
+C:\Users\Anjusik\PythonProject\tests\smoke_e19.py:175:command = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=True).prepare_command(
+C:\Users\Anjusik\PythonProject\tests\smoke_e19.py:265:command = TestnetCommandGateway(mode=MODE_TESTNET, manual_enable=True).prepare_command(
+C:\Users\Anjusik\PythonProject\tests\smoke_e2.py:5:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e2.py:45:validated = consume_decision_row(source)
+C:\Users\Anjusik\PythonProject\tests\smoke_e3.py:7:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e3.py:46:validated = consume_decision_row(source)
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:7:from backtest.execution.decision_consumer import ValidatedExecutionIntent, consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:8:from backtest.execution.mechanical_safety_bridge import BLOCK, CRITICAL, INFO, check_mechanical_safety
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:48:validated = consume_decision_row(source)
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:50:passed = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:61:killed = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:73:invalid_geometry = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:81:duplicate = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\tests\smoke_e4.py:90:expired = check_mechanical_safety(
+C:\Users\Anjusik\PythonProject\tests\smoke_e5.py:7:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e5.py:52:intent = consume_decision_row(row)
+C:\Users\Anjusik\PythonProject\tests\smoke_e5.py:58:other_intent = consume_decision_row(valid_row("XRPUSDT|TDP_REENTRY|LONG|2026-07-08T10:00:00+00:00"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e6.py:8:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e6.py:60:intent = consume_decision_row(row)
+C:\Users\Anjusik\PythonProject\tests\smoke_e6.py:67:rounded_intent = consume_decision_row(valid_row(authorized_qty="1.23456"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e6.py:75:min_intent = consume_decision_row(valid_row(authorized_qty="0.009"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e6.py:85:invalid_intent = consume_decision_row(valid_row(authorized_qty="0.5"))
+C:\Users\Anjusik\PythonProject\tests\smoke_e8.py:8:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e8.py:67:validated = consume_decision_row(row)
+C:\Users\Anjusik\PythonProject\tests\smoke_e9.py:8:from backtest.execution.decision_consumer import consume_decision_row
+C:\Users\Anjusik\PythonProject\tests\smoke_e9.py:78:validated = consume_decision_row(row)
+C:\Users\Anjusik\PythonProject\tests\validate_e17_real_testnet_submit.py:12:from backtest.execution.testnet_command_gateway import CommandDecision, MODE_TESTNET
+C:\Users\Anjusik\PythonProject\tests\validate_e17_real_testnet_submit.py:13:from backtest.execution.testnet_real_submit import (

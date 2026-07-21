@@ -2351,6 +2351,73 @@ def _append_df(path: Path, df: pd.DataFrame) -> None:
         df.to_csv(path, mode="a", header=False, index=False)
 
 
+def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str) -> None:
+    """Run the entire optional E21 shadow operation without affecting ATS.
+
+    Every shadow-only operation is inside this guard: dataframe validation,
+    row extraction, dict/timestamp conversion, lazy import, executor ingress,
+    mechanical safety, and diagnostic formatting/output.
+    """
+
+    try:
+        if out_df is None or out_df.empty:
+            return
+
+        shadow_source_row = dict(out_df.iloc[0])
+        checked_at_utc = pd.to_datetime(cycle_ts, utc=True).isoformat()
+
+        from backtest.execution.shadow_integration_boundary import (
+            evaluate_ats_shadow_admission,
+        )
+
+        shadow_result = evaluate_ats_shadow_admission(
+            shadow_source_row,
+            cycle_ts=cycle_ts,
+            checked_at_utc=checked_at_utc,
+        )
+        diagnostic = (
+            f"[EXECUTOR_SHADOW][{symbol}] "
+            f"ingress={int(shadow_result.accepted_by_ingress)} "
+            f"mechanical_allowed={int(shadow_result.mechanical_allowed)} "
+            f"severity={shadow_result.severity} reason={shadow_result.reason} "
+            f"canonical_setup_key={shadow_result.canonical_setup_key}"
+        )
+        print(diagnostic)
+    except Exception as exc:
+        # Diagnostic output is best-effort only. Even formatting/output failure
+        # must not interrupt the authoritative ATS emission path.
+        try:
+            print(
+                f"[EXECUTOR_SHADOW_INTERNAL_ERROR][{symbol}] "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+        except Exception:
+            pass
+
+
+def _emit_with_optional_executor_shadow(
+    *,
+    out_csv: str,
+    symbol: str,
+    latest_ts,
+    out_df,
+    cycle_ts,
+) -> int:
+    """Execute optional shadow diagnostics, then always call ATS emission."""
+
+    _run_executor_shadow_diagnostic(
+        out_df=out_df,
+        cycle_ts=cycle_ts,
+        symbol=symbol,
+    )
+    return _emit_observation_rows(
+        out_csv=out_csv,
+        symbol=symbol,
+        latest_ts=latest_ts,
+        df_e=out_df,
+    )
+
+
 def _emit_observation_rows(
     *,
     out_csv: Path,
@@ -4153,11 +4220,12 @@ def run_symbol_once(
         flow_row["range_retest_score"] = float(final_row.get("range_retest_score", 0.0) or 0.0)
         flow_row["trigger_refresh_applied"] = bool(final_row.get("trigger_refresh_applied", False))
 
-    written = _emit_observation_rows(
+    written = _emit_with_optional_executor_shadow(
         out_csv=out_csv,
         symbol=symbol,
         latest_ts=latest_ts,
-        df_e=out_df,
+        out_df=out_df,
+        cycle_ts=cycle_ts,
     )
     flow_row["emitted_count"] = int(written)
     if written > 0:
