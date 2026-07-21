@@ -35,7 +35,10 @@ from .execution_simulator import (
 from .intent_journal import IntentJournal
 from .mechanical_safety_bridge import MechanicalSafetyResult, check_mechanical_safety
 from .quantity_converter import ExchangeQuantityRules, convert_validated_intent_quantity
-from .recovery_simulator import RecoveryDecision, RecoverySimulator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .recovery_simulator import RecoveryDecision
 
 
 class PaperExecutorError(ValueError):
@@ -101,7 +104,7 @@ class PaperExecutor:
         self._executor_mode = executor_mode
         self._kill_switch_path = kill_switch_path
         self._simulator = ExecutionSimulator()
-        self._recovery_simulator = RecoverySimulator()
+        self._recovery_simulator = None
 
     @property
     def ledger(self) -> ExecutionEventLedger:
@@ -164,7 +167,7 @@ class PaperExecutor:
             reason=idempotency.reason,
         )
 
-        exchange_ready_intent = convert_validated_intent_quantity(validated_intent, self._quantity_rules)
+        exchange_ready_intent = convert_validated_intent_quantity(validated_intent, rules=self._quantity_rules)
         self._ledger.append_event(
             canonical_setup_key=key,
             event_type=EXCHANGE_READY,
@@ -188,7 +191,11 @@ class PaperExecutor:
         )
         self._append_simulated_event(simulated_event)
 
-        if simulated_event.status in {ACKED, REJECTED, FILLED, PARTIALLY_FILLED, TIMEOUT_UNKNOWN, EXCHANGE_UNAVAILABLE}:
+        if simulated_event.status != FILLED:
+            if self._recovery_simulator is None:
+                from .recovery_simulator import RecoverySimulator
+
+                self._recovery_simulator = RecoverySimulator()
             recovery_decision = self._recovery_simulator.decide(
                 simulated_event,
                 request=_recovery_request(active_request.decided_at_utc),
@@ -223,7 +230,7 @@ class PaperExecutor:
             reason=event.reject_reason,
         )
 
-    def _append_recovery_if_required(self, decision: RecoveryDecision, status: str) -> None:
+    def _append_recovery_if_required(self, decision: "RecoveryDecision", status: str) -> None:
         if status == FILLED:
             return
         self._ledger.append_recovery_decision(decision)

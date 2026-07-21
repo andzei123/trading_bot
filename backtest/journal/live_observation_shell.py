@@ -2351,7 +2351,7 @@ def _append_df(path: Path, df: pd.DataFrame) -> None:
         df.to_csv(path, mode="a", header=False, index=False)
 
 
-def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str) -> None:
+def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str, paper_mode: bool = False) -> None:
     """Run the entire optional E21 shadow operation without affecting ATS.
 
     Every shadow-only operation is inside this guard: dataframe validation,
@@ -2374,13 +2374,21 @@ def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str) -> None:
             shadow_source_row,
             cycle_ts=cycle_ts,
             checked_at_utc=checked_at_utc,
+            paper_mode=bool(paper_mode),
         )
         diagnostic = (
             f"[EXECUTOR_SHADOW][{symbol}] "
             f"ingress={int(shadow_result.accepted_by_ingress)} "
             f"mechanical_allowed={int(shadow_result.mechanical_allowed)} "
             f"severity={shadow_result.severity} reason={shadow_result.reason} "
-            f"canonical_setup_key={shadow_result.canonical_setup_key}"
+            f"canonical_setup_key={shadow_result.canonical_setup_key} "
+            f"paper_requested={int(shadow_result.paper_requested)} "
+            f"paper_started={int(shadow_result.paper_started)} "
+            f"paper_completed={int(shadow_result.paper_completed)} "
+            f"paper_failed={int(shadow_result.paper_failed)} "
+            f"paper_duplicate_blocked={int(shadow_result.paper_duplicate_blocked)} "
+            f"paper_state={shadow_result.paper_state} "
+            f"paper_event_count={shadow_result.paper_event_count}"
         )
         print(diagnostic)
     except Exception as exc:
@@ -2402,6 +2410,7 @@ def _emit_with_optional_executor_shadow(
     latest_ts,
     out_df,
     cycle_ts,
+    paper_mode: bool = False,
 ) -> int:
     """Execute optional shadow diagnostics, then always call ATS emission."""
 
@@ -2409,6 +2418,7 @@ def _emit_with_optional_executor_shadow(
         out_df=out_df,
         cycle_ts=cycle_ts,
         symbol=symbol,
+        paper_mode=bool(paper_mode),
     )
     return _emit_observation_rows(
         out_csv=out_csv,
@@ -3474,6 +3484,7 @@ def run_symbol_once(
     authority_waterfall_csv: str = "",
     parity_range_width_pct_min: float = 0.0,
     parity_distance_to_entry_R_min: float = 0.5,
+    executor_paper_mode: bool = False,
 ) -> int:
     candles_df = load_bybit_latest(category, symbol, interval, candles_n)
     fetch_status = LAST_BYBIT_FETCH_STATUS.get(str(symbol).upper(), FETCH_STATUS_EMPTY)
@@ -4226,6 +4237,7 @@ def run_symbol_once(
         latest_ts=latest_ts,
         out_df=out_df,
         cycle_ts=cycle_ts,
+        paper_mode=bool(executor_paper_mode),
     )
     flow_row["emitted_count"] = int(written)
     if written > 0:
@@ -4335,6 +4347,11 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--once", action="store_true", help="Run one cycle only")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--debug_force_entries", action="store_true")
+    ap.add_argument(
+        "--executor_paper_mode",
+        action="store_true",
+        help="Enable session-local Executor paper open/fill after the certified E21 boundary",
+    )
     ap.add_argument("--use_wait_confirmation", action="store_true")
     ap.add_argument("--tdp_wait_off_only", action="store_true")
     ap.add_argument("--candidate_pressure_csv", default="backtest/journal/exports_live/candidate_pressure.csv")
@@ -4502,6 +4519,7 @@ def main(argv: List[str] | None = None) -> int:
                     authority_waterfall_csv=authority_waterfall_csv,
                     parity_range_width_pct_min=float(args.parity_range_width_pct_min),
                     parity_distance_to_entry_R_min=float(args.parity_distance_to_entry_R_min),
+                    executor_paper_mode=bool(args.executor_paper_mode),
                 )
                 cycle_written += written_for_symbol
 

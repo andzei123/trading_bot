@@ -26,6 +26,33 @@ class ExecutorShadowAdmissionResult:
     canonical_setup_key: str
     symbol: str
     side: str
+    paper_requested: bool = False
+    paper_started: bool = False
+    paper_completed: bool = False
+    paper_failed: bool = False
+    paper_duplicate_blocked: bool = False
+    paper_state: str = ""
+    paper_event_count: int = 0
+
+
+_SESSION_PAPER_EXECUTOR = None
+
+
+def _session_paper_executor():
+    """Return the E22.1 session-local paper executor without persistence."""
+
+    global _SESSION_PAPER_EXECUTOR
+    if _SESSION_PAPER_EXECUTOR is None:
+        from .execution_event_ledger import ExecutionEventLedger
+        from .execution_identity_registry import ExecutionIdentityRegistry
+        from .paper_executor import PaperExecutor
+
+        _SESSION_PAPER_EXECUTOR = PaperExecutor(
+            ledger=ExecutionEventLedger(),
+            identity_registry=ExecutionIdentityRegistry(),
+            executor_mode="DRY_RUN",
+        )
+    return _SESSION_PAPER_EXECUTOR
 
 
 def _text(value: object) -> str:
@@ -39,6 +66,7 @@ def evaluate_ats_shadow_admission(
     *,
     cycle_ts: object,
     checked_at_utc: str,
+    paper_mode: bool = False,
 ) -> ExecutorShadowAdmissionResult:
     """Run the E1 -> E2 -> E4 boundary without side effects.
 
@@ -100,12 +128,66 @@ def evaluate_ats_shadow_admission(
             side=side,
         )
 
+    if not mechanical.allowed or not paper_mode:
+        return ExecutorShadowAdmissionResult(
+            accepted_by_ingress=True,
+            mechanical_allowed=mechanical.allowed,
+            reason=mechanical.reason,
+            severity=mechanical.severity,
+            canonical_setup_key=mechanical.canonical_setup_key,
+            symbol=mechanical.symbol,
+            side=mechanical.side,
+            paper_requested=bool(paper_mode),
+        )
+
+    paper_requested = True
+    paper_started = False
+    try:
+        from .paper_executor import PaperExecutionRequest
+
+        executor = _session_paper_executor()
+        paper_started = True
+        paper_duplicate_blocked = executor.identity_registry.contains(
+            validated.canonical_setup_key
+        )
+        event_count_before = len(executor.ledger.events)
+        snapshot = executor.run(
+            validated,
+            PaperExecutionRequest(
+                checked_at_utc=checked_at_utc,
+                simulated_at_utc=checked_at_utc,
+            ),
+        )
+        paper_duplicate_blocked = bool(
+            paper_duplicate_blocked
+            and len(executor.ledger.events) == event_count_before
+        )
+    except Exception as exc:
+        return ExecutorShadowAdmissionResult(
+            accepted_by_ingress=True,
+            mechanical_allowed=True,
+            reason=f"EXECUTOR_PAPER_FAILED:{type(exc).__name__}:{exc}",
+            severity="CRITICAL",
+            canonical_setup_key=mechanical.canonical_setup_key,
+            symbol=mechanical.symbol,
+            side=mechanical.side,
+            paper_requested=paper_requested,
+            paper_started=paper_started,
+            paper_failed=True,
+        )
+
     return ExecutorShadowAdmissionResult(
         accepted_by_ingress=True,
-        mechanical_allowed=mechanical.allowed,
+        mechanical_allowed=True,
         reason=mechanical.reason,
         severity=mechanical.severity,
         canonical_setup_key=mechanical.canonical_setup_key,
         symbol=mechanical.symbol,
         side=mechanical.side,
+        paper_requested=paper_requested,
+        paper_started=True,
+        paper_completed=True,
+        paper_duplicate_blocked=paper_duplicate_blocked,
+        paper_state=snapshot.current_state,
+        paper_event_count=snapshot.event_count,
     )
