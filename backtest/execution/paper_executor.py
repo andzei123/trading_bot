@@ -6,6 +6,9 @@ from pathlib import Path
 
 from .decision_consumer import ValidatedExecutionIntent
 from .execution_event_ledger import (
+    CLOSE_CONFIRMED,
+    CLOSE_REQUESTED,
+    EXECUTION_COMPLETED,
     EXCHANGE_READY,
     IDEMPOTENCY_ALLOWED,
     INTENT_ACCEPTED,
@@ -18,6 +21,8 @@ from .execution_event_ledger import (
     SIMULATED_REJECTED,
     SIMULATED_TIMEOUT_UNKNOWN,
     ExecutionEventLedger,
+    ExecutionLifecycleSnapshot,
+    ExecutionLifecycleTransitionError,
     ExecutionStateSnapshot,
 )
 from .execution_identity_registry import ExecutionIdentityRegistry
@@ -203,6 +208,71 @@ class PaperExecutor:
             self._append_recovery_if_required(recovery_decision, simulated_event.status)
 
         return self._ledger.rebuild_snapshot(key)
+
+    def lifecycle_snapshot(self, canonical_setup_key: str) -> ExecutionLifecycleSnapshot:
+        """Return the deterministic executor-only lifecycle projection."""
+
+        return self._ledger.rebuild_lifecycle_snapshot(canonical_setup_key)
+
+    def observe_close_requested(
+        self,
+        canonical_setup_key: str,
+        *,
+        observed_at_utc: str | None = None,
+        reason: str = "ats_close_requested",
+    ) -> ExecutionLifecycleSnapshot:
+        """Record an ATS-originated close request without deciding the exit."""
+
+        try:
+            self._ledger.append_lifecycle_event(
+                canonical_setup_key=canonical_setup_key,
+                event_type=CLOSE_REQUESTED,
+                recorded_at_utc=observed_at_utc,
+                reason=reason,
+            )
+        except ExecutionLifecycleTransitionError as exc:
+            raise PaperExecutorError(f"invalid close request lifecycle transition: {exc}") from exc
+        return self.lifecycle_snapshot(canonical_setup_key)
+
+    def observe_close_confirmed(
+        self,
+        canonical_setup_key: str,
+        *,
+        observed_at_utc: str | None = None,
+        reason: str = "ats_close_confirmed",
+    ) -> ExecutionLifecycleSnapshot:
+        """Record confirmation supplied by ATS; no close decision is made here."""
+
+        try:
+            self._ledger.append_lifecycle_event(
+                canonical_setup_key=canonical_setup_key,
+                event_type=CLOSE_CONFIRMED,
+                recorded_at_utc=observed_at_utc,
+                reason=reason,
+            )
+        except ExecutionLifecycleTransitionError as exc:
+            raise PaperExecutorError(f"invalid close confirmation lifecycle transition: {exc}") from exc
+        return self.lifecycle_snapshot(canonical_setup_key)
+
+    def observe_execution_completed(
+        self,
+        canonical_setup_key: str,
+        *,
+        observed_at_utc: str | None = None,
+        reason: str = "ats_execution_completed",
+    ) -> ExecutionLifecycleSnapshot:
+        """Record terminal lifecycle completion after ATS supplies close confirmation."""
+
+        try:
+            self._ledger.append_lifecycle_event(
+                canonical_setup_key=canonical_setup_key,
+                event_type=EXECUTION_COMPLETED,
+                recorded_at_utc=observed_at_utc,
+                reason=reason,
+            )
+        except ExecutionLifecycleTransitionError as exc:
+            raise PaperExecutorError(f"invalid execution completion lifecycle transition: {exc}") from exc
+        return self.lifecycle_snapshot(canonical_setup_key)
 
     def _append_mechanical_safety_passed(self, safety: MechanicalSafetyResult) -> None:
         self._ledger.append_event(

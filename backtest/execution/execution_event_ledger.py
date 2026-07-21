@@ -13,6 +13,10 @@ class ExecutionEventLedgerError(ValueError):
     """Raised when an executor-local event ledger operation is invalid."""
 
 
+class ExecutionLifecycleTransitionError(ExecutionEventLedgerError):
+    """Raised when an executor lifecycle stream violates canonical ordering."""
+
+
 INTENT_ACCEPTED = "INTENT_ACCEPTED"
 MECHANICAL_SAFETY_PASSED = "MECHANICAL_SAFETY_PASSED"
 IDEMPOTENCY_ALLOWED = "IDEMPOTENCY_ALLOWED"
@@ -30,6 +34,9 @@ SUBMIT_REJECT = "SUBMIT_REJECT"
 SUBMIT_TIMEOUT_UNKNOWN = "SUBMIT_TIMEOUT_UNKNOWN"
 SUBMIT_UNKNOWN = "SUBMIT_UNKNOWN"
 SUBMIT_BLOCKED = "SUBMIT_BLOCKED"
+CLOSE_REQUESTED = "CLOSE_REQUESTED"
+CLOSE_CONFIRMED = "CLOSE_CONFIRMED"
+EXECUTION_COMPLETED = "EXECUTION_COMPLETED"
 
 SUPPORTED_EXECUTION_LEDGER_EVENTS = frozenset(
     {
@@ -50,6 +57,9 @@ SUPPORTED_EXECUTION_LEDGER_EVENTS = frozenset(
         SUBMIT_TIMEOUT_UNKNOWN,
         SUBMIT_UNKNOWN,
         SUBMIT_BLOCKED,
+        CLOSE_REQUESTED,
+        CLOSE_CONFIRMED,
+        EXECUTION_COMPLETED,
     }
 )
 
@@ -96,6 +106,24 @@ class ExecutionStateSnapshot:
     submit_confirmed: bool = False
     submit_unknown: bool = False
     terminal_submit_failure: bool = False
+
+
+@dataclass(frozen=True)
+class ExecutionLifecycleSnapshot:
+    """Immutable executor-only lifecycle projection.
+
+    The projection observes executor ledger events only. It does not decide
+    entries, exits, TP, SL, risk, selection, or Position State authority.
+    """
+
+    canonical_setup_key: str
+    current_state: str
+    transition_history: tuple[str, ...]
+    event_count: int
+    position_active: bool
+    close_requested: bool
+    close_confirmed: bool
+    completed: bool
 
 
 class ExecutionEventLedger:
@@ -177,6 +205,27 @@ class ExecutionEventLedger:
 
     def rebuild_snapshot(self, canonical_setup_key: str) -> ExecutionStateSnapshot:
         return rebuild_execution_state_snapshot(self._events, canonical_setup_key)
+
+    def rebuild_lifecycle_snapshot(self, canonical_setup_key: str) -> ExecutionLifecycleSnapshot:
+        return rebuild_execution_lifecycle_snapshot(self._events, canonical_setup_key)
+
+    def append_lifecycle_event(
+        self,
+        *,
+        canonical_setup_key: str,
+        event_type: str,
+        recorded_at_utc: str | None = None,
+        reason: str = "",
+    ) -> ExecutionLedgerEvent:
+        """Validate and append one E23 lifecycle event using the canonical rules."""
+
+        validate_next_lifecycle_event(self._events, canonical_setup_key, event_type)
+        return self.append_event(
+            canonical_setup_key=canonical_setup_key,
+            event_type=event_type,
+            recorded_at_utc=recorded_at_utc,
+            reason=reason,
+        )
 
 
 def rebuild_execution_state_snapshot(
@@ -334,6 +383,116 @@ def rebuild_execution_state_snapshot(
         terminal_submit_failure=terminal_submit_failure,
     )
 
+
+def rebuild_execution_lifecycle_snapshot(
+    events: Iterable[ExecutionLedgerEvent],
+    canonical_setup_key: str,
+) -> ExecutionLifecycleSnapshot:
+    """Rebuild the executor lifecycle and fail closed on malformed ordering."""
+
+    key = canonical_setup_key.strip()
+    if not key:
+        raise ExecutionEventLedgerError("canonical_setup_key is required")
+
+    identity_events = [event for event in events if event.canonical_setup_key == key]
+    history: tuple[str, ...] = ()
+    for event in identity_events:
+        history = _apply_lifecycle_event(history, event.event_type)
+
+    current_state = history[-1] if history else "NO_EVENTS"
+    return ExecutionLifecycleSnapshot(
+        canonical_setup_key=key,
+        current_state=current_state,
+        transition_history=history,
+        event_count=len(identity_events),
+        position_active=current_state == "POSITION_ACTIVE",
+        close_requested="CLOSE_REQUESTED" in history,
+        close_confirmed="CLOSE_CONFIRMED" in history,
+        completed=current_state == "EXECUTION_COMPLETED",
+    )
+
+
+def validate_next_lifecycle_event(
+    events: Iterable[ExecutionLedgerEvent],
+    canonical_setup_key: str,
+    event_type: str,
+) -> None:
+    """Validate one prospective lifecycle event without mutating the ledger."""
+
+    snapshot = rebuild_execution_lifecycle_snapshot(events, canonical_setup_key)
+    _apply_lifecycle_event(snapshot.transition_history, event_type.strip().upper())
+
+
+def _apply_lifecycle_event(history: tuple[str, ...], event_type: str) -> tuple[str, ...]:
+    """Canonical E23 lifecycle transition authority.
+
+    Certified E11/E22 non-lifecycle events are ignored. Lifecycle-bearing
+    open/fill events may project more than one state because the certified
+    simulator records a single terminal fill event rather than separate
+    exchange acknowledgements.
+    """
+
+    current = history[-1] if history else "NO_EVENTS"
+    lifecycle_event = event_type.strip().upper()
+
+    ignored_events = {
+        IDEMPOTENCY_ALLOWED,
+        SIMULATED_REJECTED,
+        SIMULATED_TIMEOUT_UNKNOWN,
+        SIMULATED_EXCHANGE_UNAVAILABLE,
+        RECOVERY_DECISION,
+        RESERVED_PRE_SUBMIT,
+        SUBMIT_ACK,
+        SUBMIT_REJECT,
+        SUBMIT_TIMEOUT_UNKNOWN,
+        SUBMIT_UNKNOWN,
+        SUBMIT_BLOCKED,
+    }
+    if lifecycle_event in ignored_events:
+        return history
+
+    if current == "EXECUTION_COMPLETED":
+        raise ExecutionLifecycleTransitionError(
+            f"lifecycle transition {lifecycle_event} is forbidden after EXECUTION_COMPLETED"
+        )
+
+    def require(expected: tuple[str, ...], transition: str) -> None:
+        if current not in expected:
+            raise ExecutionLifecycleTransitionError(
+                f"lifecycle transition {transition} requires {expected}; current state is {current}"
+            )
+
+    if lifecycle_event == INTENT_ACCEPTED:
+        require(("NO_EVENTS",), "INTENT_ACCEPTED")
+        return history + ("INTENT_ACCEPTED",)
+    if lifecycle_event == MECHANICAL_SAFETY_PASSED:
+        require(("INTENT_ACCEPTED",), "MECHANICAL_ALLOWED")
+        return history + ("MECHANICAL_ALLOWED",)
+    if lifecycle_event == EXCHANGE_READY:
+        require(("MECHANICAL_ALLOWED",), "OPEN_REQUESTED")
+        return history + ("OPEN_REQUESTED",)
+    if lifecycle_event == SIMULATED_ACKED:
+        require(("OPEN_REQUESTED",), "OPEN_CONFIRMED")
+        return history + ("OPEN_CONFIRMED",)
+    if lifecycle_event == SIMULATED_PARTIALLY_FILLED:
+        require(("OPEN_REQUESTED", "OPEN_CONFIRMED", "PARTIALLY_FILLED"), "PARTIALLY_FILLED")
+        additions = () if current == "PARTIALLY_FILLED" else (("OPEN_CONFIRMED",) if current == "OPEN_REQUESTED" else ())
+        return history + additions + ("PARTIALLY_FILLED",)
+    if lifecycle_event == SIMULATED_FILLED:
+        require(("OPEN_REQUESTED", "OPEN_CONFIRMED", "PARTIALLY_FILLED"), "FULLY_FILLED")
+        additions = ("OPEN_CONFIRMED",) if current == "OPEN_REQUESTED" else ()
+        return history + additions + ("FULLY_FILLED", "POSITION_ACTIVE")
+    if lifecycle_event == CLOSE_REQUESTED:
+        require(("POSITION_ACTIVE",), "CLOSE_REQUESTED")
+        return history + ("CLOSE_REQUESTED",)
+    if lifecycle_event == CLOSE_CONFIRMED:
+        require(("CLOSE_REQUESTED",), "CLOSE_CONFIRMED")
+        return history + ("CLOSE_CONFIRMED",)
+    if lifecycle_event == EXECUTION_COMPLETED:
+        require(("CLOSE_CONFIRMED",), "EXECUTION_COMPLETED")
+        return history + ("EXECUTION_COMPLETED",)
+
+    return history
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
