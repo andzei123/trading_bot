@@ -227,6 +227,72 @@ class ExecutionEventLedger:
             reason=reason,
         )
 
+    def append_lifecycle_events(
+        self,
+        *,
+        canonical_setup_key: str,
+        event_types: Iterable[str],
+        recorded_at_utc: str | None = None,
+        reason: str = "",
+    ) -> tuple[ExecutionLedgerEvent, ...]:
+        """Perform one atomic in-memory validated lifecycle batch append.
+
+        The complete batch is normalized, materialized and validated against
+        the canonical E23 lifecycle authority before the real ledger is
+        mutated once with ``list.extend``. E24 does not add filesystem
+        transaction or persistence behavior.
+        """
+
+        normalized_key = canonical_setup_key.strip()
+        if not normalized_key:
+            raise ExecutionEventLedgerError("canonical_setup_key is required")
+        normalized_types = tuple(str(value).strip().upper() for value in event_types)
+        if not normalized_types:
+            raise ExecutionEventLedgerError("event_types is required")
+        if self._ledger_path is not None:
+            raise ExecutionEventLedgerError(
+                "atomic lifecycle batch append is in-memory only"
+            )
+
+        prospective_events = list(self._events)
+        batch: list[ExecutionLedgerEvent] = []
+        timestamp = recorded_at_utc or _utc_now()
+        next_sequence = len(self._events) + 1
+        for offset, event_type in enumerate(normalized_types):
+            if event_type not in SUPPORTED_EXECUTION_LEDGER_EVENTS:
+                raise ExecutionEventLedgerError(
+                    f"unsupported execution ledger event type: {event_type}"
+                )
+            validate_next_lifecycle_event(
+                prospective_events, normalized_key, event_type
+            )
+            event = ExecutionLedgerEvent(
+                sequence=next_sequence + offset,
+                canonical_setup_key=normalized_key,
+                event_type=event_type,
+                recorded_at_utc=timestamp,
+                reason=reason,
+            )
+            prospective_events.append(event)
+            batch.append(event)
+
+        expected_sequences = tuple(
+            range(next_sequence, next_sequence + len(batch))
+        )
+        actual_sequences = tuple(event.sequence for event in batch)
+        if actual_sequences != expected_sequences:
+            raise ExecutionEventLedgerError("non-contiguous lifecycle batch sequence")
+
+        self._extend_events_atomically(batch)
+        return tuple(batch)
+
+    def _extend_events_atomically(
+        self, events: list[ExecutionLedgerEvent]
+    ) -> None:
+        """Single E24 in-memory mutation point, separated for failure probes."""
+
+        self._events.extend(events)
+
 
 def rebuild_execution_state_snapshot(
     events: Iterable[ExecutionLedgerEvent],

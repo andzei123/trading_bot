@@ -3434,6 +3434,139 @@ def model_freshness_filter(df: pd.DataFrame, latest_ts: pd.Timestamp) -> pd.Data
 
     return pd.DataFrame(rows)
 
+
+def _load_executor_close_rows(position_state_csv: Path, symbol: str) -> Dict[str, Dict[str, object]]:
+    """Read only canonical Position State rows needed for E24 observation."""
+
+    if not position_state_csv.exists() or position_state_csv.stat().st_size == 0:
+        return {}
+    try:
+        state = pd.read_csv(position_state_csv)
+    except Exception:
+        return {}
+    required = {"canonical_setup_key", "symbol", "status", "closed_ts", "close_reason"}
+    if state.empty or not required.issubset(state.columns):
+        return {}
+    target_symbol = str(symbol or "").upper().strip()
+    rows: Dict[str, Dict[str, object]] = {}
+    for _, row in state.iterrows():
+        key = str(row.get("canonical_setup_key", "") or "").strip()
+        row_symbol = str(row.get("symbol", "") or "").upper().strip()
+        if not key or row_symbol != target_symbol:
+            continue
+        rows[key] = row.to_dict()
+    return rows
+
+
+def _format_executor_close_diagnostic(result) -> str:
+    return (
+        "[EXECUTOR_CLOSE_OBSERVATION] "
+        f"canonical={result.canonical_setup_key} "
+        f"classification={result.classification} "
+        f"completed={result.completed} failed={result.failed} "
+        f"duplicate_blocked={result.duplicate_blocked} reason={result.reason}"
+    )
+
+
+def _derive_executor_close_transitions(
+    before_rows: Dict[str, Dict[str, object]],
+    after_rows: Dict[str, Dict[str, object]],
+) -> List[Dict[str, object]]:
+    """Return only same-identity ATS-persisted OPEN-to-CLOSED transitions."""
+
+    transitioned: List[Dict[str, object]] = []
+    for key, before in before_rows.items():
+        after = after_rows.get(key)
+        if after is None:
+            continue
+        if str(before.get("status", "") or "").upper().strip() != "OPEN":
+            continue
+        if str(after.get("status", "") or "").upper().strip() != "CLOSED":
+            continue
+        transitioned.append(after)
+    return transitioned
+
+
+def _emit_executor_close_observation_failure(stage: str, exc: Exception) -> None:
+    """Best-effort diagnostic that can never affect ATS close authority."""
+
+    try:
+        print(
+            "[EXECUTOR_CLOSE_OBSERVATION] "
+            f"stage={stage} failed={type(exc).__name__}:{exc}"
+        )
+    except Exception:
+        pass
+
+
+def _run_authoritative_closer_then_executor_observation(
+    *,
+    symbol: str,
+    candles_df: pd.DataFrame,
+    position_state_csv: Path,
+    out_csv: Path,
+    executor_paper_mode: bool,
+):
+    """Run ATS closer authoritatively and isolate all E24 observation failures.
+
+    The ATS closer is always outside Executor containment. In non-paper mode,
+    E24 performs no preparation or observation I/O. In paper mode, failures in
+    preparation, post-close loading, transition derivation, observation, or
+    diagnostics are contained and can never prevent or undo the ATS close.
+    """
+
+    before_rows: Dict[str, Dict[str, object]] = {}
+    preparation_failed = False
+    if executor_paper_mode:
+        try:
+            before_rows = _load_executor_close_rows(position_state_csv, symbol)
+        except Exception as exc:
+            preparation_failed = True
+            _emit_executor_close_observation_failure("preparation", exc)
+
+    closer_result = close_symbol_if_hit(
+        symbol=symbol,
+        candles_df=candles_df,
+        position_state_csv=position_state_csv,
+        out_csv=out_csv,
+    )
+
+    if not executor_paper_mode:
+        return closer_result
+    if preparation_failed:
+        return closer_result
+
+    try:
+        after_rows = _load_executor_close_rows(position_state_csv, symbol)
+        transitioned = _derive_executor_close_transitions(before_rows, after_rows)
+    except Exception as exc:
+        _emit_executor_close_observation_failure("post_close_preparation", exc)
+        return closer_result
+
+    for row in transitioned:
+        try:
+            from backtest.execution.shadow_integration_boundary import (
+                observe_ats_position_closed,
+            )
+
+            result = observe_ats_position_closed(
+                canonical_setup_key=row.get("canonical_setup_key"),
+                status=row.get("status"),
+                closed_at_utc=row.get("closed_ts"),
+                close_reason=row.get("close_reason"),
+            )
+        except Exception as exc:
+            _emit_executor_close_observation_failure("observer", exc)
+            continue
+
+        try:
+            print(_format_executor_close_diagnostic(result))
+        except Exception as exc:
+            _emit_executor_close_observation_failure("diagnostic", exc)
+
+    return closer_result
+
+
 def run_symbol_once(
     *,
     cycle_ts: pd.Timestamp,
@@ -3554,12 +3687,13 @@ def run_symbol_once(
     state_path = state_dir / f"{symbol}_{interval}.txt"
     last_seen = _read_state(state_path)
 
-    # Integration point: closer runs every cycle before position gate / signal generation.
-    close_symbol_if_hit(
+    # Integration point: ATS closer persists first; Executor observes second.
+    _run_authoritative_closer_then_executor_observation(
         symbol=symbol,
         candles_df=candles_df,
         position_state_csv=position_state_csv,
         out_csv=out_csv,
+        executor_paper_mode=bool(executor_paper_mode),
     )
 
     if _position_is_open(symbol, position_state_csv):

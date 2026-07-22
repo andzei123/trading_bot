@@ -274,6 +274,28 @@ class PaperExecutor:
             raise PaperExecutorError(f"invalid execution completion lifecycle transition: {exc}") from exc
         return self.lifecycle_snapshot(canonical_setup_key)
 
+    def observe_ats_position_closed(
+        self,
+        canonical_setup_key: str,
+        *,
+        observed_at_utc: str,
+        reason: str,
+    ) -> ExecutionLifecycleSnapshot:
+        """Record one validated ATS-persisted close fact as an atomic batch."""
+
+        try:
+            self._ledger.append_lifecycle_events(
+                canonical_setup_key=canonical_setup_key,
+                event_types=(CLOSE_REQUESTED, CLOSE_CONFIRMED, EXECUTION_COMPLETED),
+                recorded_at_utc=observed_at_utc,
+                reason=reason,
+            )
+        except ExecutionLifecycleTransitionError as exc:
+            raise PaperExecutorError(
+                f"invalid ATS close observation lifecycle transition: {exc}"
+            ) from exc
+        return self.lifecycle_snapshot(canonical_setup_key)
+
     def _append_mechanical_safety_passed(self, safety: MechanicalSafetyResult) -> None:
         self._ledger.append_event(
             canonical_setup_key=safety.canonical_setup_key,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Mapping
 
 from .decision_consumer import DecisionConsumerError, consume_decision
@@ -190,4 +191,183 @@ def evaluate_ats_shadow_admission(
         paper_duplicate_blocked=paper_duplicate_blocked,
         paper_state=snapshot.current_state,
         paper_event_count=snapshot.event_count,
+    )
+
+_ATS_CLOSE_REASONS = frozenset({"TP", "SL"})
+
+
+@dataclass(frozen=True)
+class AtsCloseObservation:
+    """Immutable structurally validated ATS Position State CLOSED fact."""
+
+    canonical_setup_key: str
+    status: str
+    closed_at_utc: str
+    close_reason: str
+
+
+@dataclass(frozen=True)
+class ExecutorCloseObservationResult:
+    """Diagnostic-only result for one ATS-authoritative close observation."""
+
+    observed: bool
+    completed: bool
+    failed: bool
+    duplicate_blocked: bool
+    classification: str
+    reason: str
+    canonical_setup_key: str
+    lifecycle_state: str = ""
+    lifecycle_event_count: int = 0
+
+
+def _validate_ats_close_observation(
+    *,
+    canonical_setup_key: object,
+    status: object,
+    closed_at_utc: object,
+    close_reason: object,
+) -> tuple[AtsCloseObservation | None, str, str]:
+    key = _text(canonical_setup_key)
+    if not key:
+        return None, "MISSING_CANONICAL_KEY", "canonical_setup_key is required"
+
+    normalized_status = _text(status).upper()
+    if normalized_status != "CLOSED":
+        return None, "STATUS_NOT_CLOSED", "status must be CLOSED"
+
+    timestamp_text = _text(closed_at_utc)
+    if not timestamp_text:
+        return None, "MISSING_TIMESTAMP", "closed_at_utc is required"
+    try:
+        parsed = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
+    except ValueError:
+        return None, "INVALID_TIMESTAMP", "closed_at_utc is not ISO-8601 parseable"
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None, "INVALID_TIMESTAMP", "closed_at_utc must be timezone-aware"
+    normalized_timestamp = parsed.astimezone(timezone.utc).isoformat()
+
+    normalized_reason = _text(close_reason).upper()
+    if not normalized_reason:
+        return None, "MISSING_REASON", "close_reason is required"
+    if normalized_reason not in _ATS_CLOSE_REASONS:
+        return None, "UNSUPPORTED_REASON", (
+            "close_reason must match authoritative position_closer output: TP or SL"
+        )
+
+    return (
+        AtsCloseObservation(
+            canonical_setup_key=key,
+            status="CLOSED",
+            closed_at_utc=normalized_timestamp,
+            close_reason=normalized_reason,
+        ),
+        "VALID",
+        "ats close observation payload valid",
+    )
+
+
+def _completed_close_metadata(executor, key: str) -> tuple[str, str]:
+    """Return recorded E24 close timestamp/reason without changing E23 snapshots."""
+
+    from .execution_event_ledger import CLOSE_REQUESTED
+
+    for event in reversed(executor.ledger.events):
+        if event.canonical_setup_key != key or event.event_type != CLOSE_REQUESTED:
+            continue
+        prefix = "ats_position_closed:"
+        reason = event.reason[len(prefix):] if event.reason.startswith(prefix) else event.reason
+        return event.recorded_at_utc, reason.upper()
+    return "", ""
+
+
+def observe_ats_position_closed(
+    *,
+    canonical_setup_key: object,
+    status: object,
+    closed_at_utc: object,
+    close_reason: object,
+) -> ExecutorCloseObservationResult:
+    """Validate and record a close already persisted by authoritative ATS."""
+
+    payload, classification, detail = _validate_ats_close_observation(
+        canonical_setup_key=canonical_setup_key,
+        status=status,
+        closed_at_utc=closed_at_utc,
+        close_reason=close_reason,
+    )
+    if payload is None:
+        return ExecutorCloseObservationResult(
+            observed=False,
+            completed=False,
+            failed=True,
+            duplicate_blocked=False,
+            classification=classification,
+            reason=f"EXECUTOR_CLOSE_OBSERVATION_BLOCKED:{classification}:{detail}",
+            canonical_setup_key=_text(canonical_setup_key),
+        )
+
+    try:
+        executor = _session_paper_executor()
+        before = executor.lifecycle_snapshot(payload.canonical_setup_key)
+        if before.completed:
+            prior_timestamp, prior_reason = _completed_close_metadata(
+                executor, payload.canonical_setup_key
+            )
+            identical = (
+                prior_timestamp == payload.closed_at_utc
+                and prior_reason == payload.close_reason
+            )
+            duplicate_classification = (
+                "DUPLICATE_OBSERVATION"
+                if identical
+                else "CONFLICTING_DUPLICATE_OBSERVATION"
+            )
+            return ExecutorCloseObservationResult(
+                observed=True,
+                completed=False,
+                failed=True,
+                duplicate_blocked=True,
+                classification=duplicate_classification,
+                reason=f"EXECUTOR_CLOSE_OBSERVATION_BLOCKED:{duplicate_classification}",
+                canonical_setup_key=payload.canonical_setup_key,
+                lifecycle_state=before.current_state,
+                lifecycle_event_count=before.event_count,
+            )
+
+        snapshot = executor.observe_ats_position_closed(
+            payload.canonical_setup_key,
+            observed_at_utc=payload.closed_at_utc,
+            reason=f"ats_position_closed:{payload.close_reason}",
+        )
+    except Exception as exc:
+        from .paper_executor import PaperExecutorError
+
+        is_lifecycle = isinstance(exc, PaperExecutorError)
+        failure_classification = (
+            "LIFECYCLE_ORDERING_FAILURE" if is_lifecycle else "UNEXPECTED_INTERNAL_FAILURE"
+        )
+        return ExecutorCloseObservationResult(
+            observed=True,
+            completed=False,
+            failed=True,
+            duplicate_blocked=False,
+            classification=failure_classification,
+            reason=(
+                f"EXECUTOR_CLOSE_OBSERVATION_FAILED:{failure_classification}:"
+                f"{type(exc).__name__}:{exc}"
+            ),
+            canonical_setup_key=payload.canonical_setup_key,
+        )
+
+    return ExecutorCloseObservationResult(
+        observed=True,
+        completed=True,
+        failed=False,
+        duplicate_blocked=False,
+        classification="CLOSE_OBSERVED",
+        reason="ats_close_observed",
+        canonical_setup_key=payload.canonical_setup_key,
+        lifecycle_state=snapshot.current_state,
+        lifecycle_event_count=snapshot.event_count,
     )
