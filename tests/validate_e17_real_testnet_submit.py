@@ -95,6 +95,7 @@ def main() -> None:
         print("E17_REAL_TESTNET_SUBMIT_RESULT")
         print(snapshot)
         print("ledger_events", ledger.events)
+        ledger.close()
 
 
 if __name__ == "__main__":

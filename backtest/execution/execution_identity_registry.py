@@ -74,6 +74,12 @@ class ExecutionIdentityRegistry:
 
         return tuple(sorted(self._accepted_identities))
 
+    def restore_validated_identities(self, canonical_setup_keys) -> None:
+        """Restore duplicate protection from already validated ledger evidence."""
+
+        restored = {_normalize_canonical_setup_key(key) for key in canonical_setup_keys}
+        self._accepted_identities.update(restored)
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()

@@ -139,6 +139,7 @@ def main() -> None:
 
         copied = replace(ack_result)
         assert copied == ack_result
+        ledger.close()
 
     after_files = _file_snapshot()
     production_files_modified = int(before_files != after_files)

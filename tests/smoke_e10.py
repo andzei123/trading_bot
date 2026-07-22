@@ -105,6 +105,7 @@ def main() -> None:
             immutable_snapshot = True
 
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+        ledger.close()
         after_production_probe = set(Path("backtest").rglob("live_rotation_plan.csv"))
 
     assert event1.sequence == 1

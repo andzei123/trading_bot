@@ -2351,7 +2351,7 @@ def _append_df(path: Path, df: pd.DataFrame) -> None:
         df.to_csv(path, mode="a", header=False, index=False)
 
 
-def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str, paper_mode: bool = False) -> None:
+def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str, paper_mode: bool = False, executor_ledger_path: str | Path | None = None) -> None:
     """Run the entire optional E21 shadow operation without affecting ATS.
 
     Every shadow-only operation is inside this guard: dataframe validation,
@@ -2375,6 +2375,7 @@ def _run_executor_shadow_diagnostic(*, out_df, cycle_ts, symbol: str, paper_mode
             cycle_ts=cycle_ts,
             checked_at_utc=checked_at_utc,
             paper_mode=bool(paper_mode),
+            executor_ledger_path=executor_ledger_path,
         )
         diagnostic = (
             f"[EXECUTOR_SHADOW][{symbol}] "
@@ -2411,6 +2412,7 @@ def _emit_with_optional_executor_shadow(
     out_df,
     cycle_ts,
     paper_mode: bool = False,
+    executor_ledger_path: str | Path | None = None,
 ) -> int:
     """Execute optional shadow diagnostics, then always call ATS emission."""
 
@@ -2419,6 +2421,7 @@ def _emit_with_optional_executor_shadow(
         cycle_ts=cycle_ts,
         symbol=symbol,
         paper_mode=bool(paper_mode),
+        executor_ledger_path=executor_ledger_path,
     )
     return _emit_observation_rows(
         out_csv=out_csv,
@@ -3435,6 +3438,13 @@ def model_freshness_filter(df: pd.DataFrame, latest_ts: pd.Timestamp) -> pd.Data
     return pd.DataFrame(rows)
 
 
+def _executor_persistent_ledger_path(out_csv: str | Path) -> Path:
+    """Return the executor-local E25 ledger beside the configured ATS output."""
+
+    output = Path(out_csv)
+    return output.parent / "executor_execution_event_ledger.jsonl"
+
+
 def _load_executor_close_rows(position_state_csv: Path, symbol: str) -> Dict[str, Dict[str, object]]:
     """Read only canonical Position State rows needed for E24 observation."""
 
@@ -3506,6 +3516,7 @@ def _run_authoritative_closer_then_executor_observation(
     position_state_csv: Path,
     out_csv: Path,
     executor_paper_mode: bool,
+    executor_ledger_path: str | Path | None = None,
 ):
     """Run ATS closer authoritatively and isolate all E24 observation failures.
 
@@ -3554,6 +3565,7 @@ def _run_authoritative_closer_then_executor_observation(
                 status=row.get("status"),
                 closed_at_utc=row.get("closed_ts"),
                 close_reason=row.get("close_reason"),
+                executor_ledger_path=executor_ledger_path,
             )
         except Exception as exc:
             _emit_executor_close_observation_failure("observer", exc)
@@ -3694,6 +3706,9 @@ def run_symbol_once(
         position_state_csv=position_state_csv,
         out_csv=out_csv,
         executor_paper_mode=bool(executor_paper_mode),
+        executor_ledger_path=(
+            _executor_persistent_ledger_path(out_csv) if executor_paper_mode else None
+        ),
     )
 
     if _position_is_open(symbol, position_state_csv):
@@ -4372,6 +4387,9 @@ def run_symbol_once(
         out_df=out_df,
         cycle_ts=cycle_ts,
         paper_mode=bool(executor_paper_mode),
+        executor_ledger_path=(
+            _executor_persistent_ledger_path(out_csv) if executor_paper_mode else None
+        ),
     )
     flow_row["emitted_count"] = int(written)
     if written > 0:

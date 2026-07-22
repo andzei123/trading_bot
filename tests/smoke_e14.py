@@ -133,6 +133,7 @@ def main() -> None:
 
         ledger_events = ledger.events
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+        ledger.close()
 
     after_production_probe = set(Path("backtest").rglob("position_state.csv")) | set(Path("backtest").rglob("live_rotation_plan.csv"))
 

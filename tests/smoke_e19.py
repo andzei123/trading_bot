@@ -184,23 +184,29 @@ def _reserved_submit_for_client_id(validated, tmp_path: Path):
         simulated_response=SIMULATED_ACK,
         submitted_at_utc=NOW,
     )
-    return submit.client_order_id
+    client_order_id = submit.client_order_id
+    ledger.close()
+    return client_order_id
 
 
 def _run(tmp: Path, key: str, response: str, exchange_state: ExchangeStateSnapshot, *, reconciliation_ok: bool = True):
-    return EndToEndTestnetDrill(
-        ledger=ExecutionEventLedger(tmp / f"{key}-ledger.jsonl"),
-        identity_registry=ExecutionIdentityRegistry(),
-        intent_journal_path=tmp / f"{key}-intent.csv",
-        manual_enable=True,
-        checked_at_utc=NOW,
-    ).run(
-        validated_intent=_validated(key),
-        exchange_state=exchange_state,
-        simulated_submit_response=response,
-        reconciliation_ok=reconciliation_ok,
-        scenario=key,
-    )
+    ledger = ExecutionEventLedger(tmp / f"{key}-ledger.jsonl")
+    try:
+        return EndToEndTestnetDrill(
+            ledger=ledger,
+            identity_registry=ExecutionIdentityRegistry(),
+            intent_journal_path=tmp / f"{key}-intent.csv",
+            manual_enable=True,
+            checked_at_utc=NOW,
+        ).run(
+            validated_intent=_validated(key),
+            exchange_state=exchange_state,
+            simulated_submit_response=response,
+            reconciliation_ok=reconciliation_ok,
+            scenario=key,
+        )
+    finally:
+        ledger.close()
 
 
 def main() -> None:
@@ -228,18 +234,22 @@ def main() -> None:
         assert unknown_result.state_snapshot.submit_unknown
         assert unknown_result.state_snapshot.block_new_orders
 
-        reservation_failure = EndToEndTestnetDrill(
-            ledger=ExecutionEventLedger(tmp / "reservation-fail-ledger.jsonl"),
-            identity_registry=ExecutionIdentityRegistry(),
-            intent_journal_path=tmp / "reservation-fail-intent.csv",
-            manual_enable=False,
-            checked_at_utc=NOW,
-        ).run(
-            validated_intent=_validated("k-reservation-fail"),
-            exchange_state=_state(),
-            simulated_submit_response=SIMULATED_ACK,
-            scenario="reservation_failure",
-        )
+        reservation_ledger = ExecutionEventLedger(tmp / "reservation-fail-ledger.jsonl")
+        try:
+            reservation_failure = EndToEndTestnetDrill(
+                ledger=reservation_ledger,
+                identity_registry=ExecutionIdentityRegistry(),
+                intent_journal_path=tmp / "reservation-fail-intent.csv",
+                manual_enable=False,
+                checked_at_utc=NOW,
+            ).run(
+                validated_intent=_validated("k-reservation-fail"),
+                exchange_state=_state(),
+                simulated_submit_response=SIMULATED_ACK,
+                scenario="reservation_failure",
+            )
+        finally:
+            reservation_ledger.close()
         assert not reservation_failure.allowed
         assert reservation_failure.submit_result is None
         assert "manual enable" in reservation_failure.reason.lower()
@@ -289,6 +299,7 @@ def main() -> None:
         _run(tmp, "k-immutable", SIMULATED_REJECT, source_state)
         assert source_intent == source_before
         assert source_state == source_state_before
+        ledger.close()
 
     after = _hash_existing_production_files()
     production_files_modified = 0 if before == after else 1

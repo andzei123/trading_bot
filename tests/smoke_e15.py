@@ -186,6 +186,7 @@ def main() -> None:
 
         assert intent == original_intent
         assert command == original_command
+        ledger.close()
 
     after_files = _file_snapshot()
     production_files_modified = int(before_files != after_files)

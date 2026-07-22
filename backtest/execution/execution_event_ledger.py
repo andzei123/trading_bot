@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .recovery_simulator import RecoveryDecision
 
@@ -15,6 +17,103 @@ class ExecutionEventLedgerError(ValueError):
 
 class ExecutionLifecycleTransitionError(ExecutionEventLedgerError):
     """Raised when an executor lifecycle stream violates canonical ordering."""
+
+
+class PersistenceStateUnknownError(ExecutionEventLedgerError):
+    """Raised after an indeterminate persistent write outcome latches fail closed."""
+
+
+class LedgerWriterOwnershipError(ExecutionEventLedgerError):
+    """Raised when another writer already owns the normalized ledger path."""
+
+
+PERSISTENCE_HEALTHY = "PERSISTENCE_HEALTHY"
+PERSISTENCE_STATE_UNKNOWN = "PERSISTENCE_STATE_UNKNOWN"
+
+
+_PROCESS_WRITER_PATHS: set[str] = set()
+_PROCESS_WRITER_PATHS_GUARD = threading.Lock()
+
+
+class _LedgerWriterOwnership:
+    """Mechanical, OS-released exclusive ownership for one ledger path."""
+
+    def __init__(self, ledger_path: Path) -> None:
+        self._normalized_path = os.path.normcase(str(ledger_path.resolve()))
+        self._lock_path = Path(f"{self._normalized_path}.lock")
+        self._handle = None
+        self._released = False
+
+        with _PROCESS_WRITER_PATHS_GUARD:
+            if self._normalized_path in _PROCESS_WRITER_PATHS:
+                raise LedgerWriterOwnershipError(
+                    f"persistent execution ledger already has an active writer: {self._normalized_path}"
+                )
+            _PROCESS_WRITER_PATHS.add(self._normalized_path)
+
+        try:
+            self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self._lock_path.open("a+b")
+            self._acquire_os_lock()
+        except Exception as exc:
+            self.release()
+            if isinstance(exc, LedgerWriterOwnershipError):
+                raise
+            raise LedgerWriterOwnershipError(
+                f"failed to acquire persistent execution ledger ownership: {self._normalized_path}"
+            ) from exc
+
+    def _acquire_os_lock(self) -> None:
+        assert self._handle is not None
+        if os.name == "nt":
+            import msvcrt
+
+            self._handle.seek(0, os.SEEK_END)
+            if self._handle.tell() == 0:
+                self._handle.write(b"0")
+                self._handle.flush()
+            self._handle.seek(0)
+            try:
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise LedgerWriterOwnershipError(
+                    f"persistent execution ledger writer lock is held: {self._normalized_path}"
+                ) from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise LedgerWriterOwnershipError(
+                    f"persistent execution ledger writer lock is held: {self._normalized_path}"
+                ) from exc
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        handle = self._handle
+        self._handle = None
+        if handle is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                handle.close()
+            except Exception:
+                pass
+        with _PROCESS_WRITER_PATHS_GUARD:
+            _PROCESS_WRITER_PATHS.discard(self._normalized_path)
 
 
 INTENT_ACCEPTED = "INTENT_ACCEPTED"
@@ -129,19 +228,83 @@ class ExecutionLifecycleSnapshot:
 class ExecutionEventLedger:
     """Executor-local append-only ledger with deterministic reconstruction.
 
-    Disk writes are optional and only occur when an explicit executor-local path
-    is supplied by the caller. There is no default production journal path.
+    A persistent ledger owns one normalized path for its active lifetime. Any
+    indeterminate write result latches the instance into
+    ``PERSISTENCE_STATE_UNKNOWN``; no later mutation or retry is allowed.
     """
 
     def __init__(self, ledger_path: str | Path | None = None) -> None:
         self._events: list[ExecutionLedgerEvent] = []
-        self._ledger_path = Path(ledger_path) if ledger_path is not None else None
+        self._ledger_path = Path(ledger_path).resolve() if ledger_path is not None else None
+        self._writer_ownership: _LedgerWriterOwnership | None = None
+        self._persistence_health = PERSISTENCE_HEALTHY
+        self._unknown_persistence_sequence: int | None = None
+        self._closed = False
         if self._ledger_path is not None:
-            self._ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            self._writer_ownership = _LedgerWriterOwnership(self._ledger_path)
+            try:
+                self._ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                if self._ledger_path.exists() and self._ledger_path.stat().st_size:
+                    self._events = list(load_persisted_execution_events(self._ledger_path))
+            except Exception:
+                self.close()
+                raise
 
     @property
     def events(self) -> tuple[ExecutionLedgerEvent, ...]:
         return tuple(self._events)
+
+    @property
+    def persistence_health(self) -> str:
+        return self._persistence_health
+
+    @property
+    def unknown_persistence_sequence(self) -> int | None:
+        return self._unknown_persistence_sequence
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._writer_ownership is not None:
+            self._writer_ownership.release()
+            self._writer_ownership = None
+
+    def __enter__(self) -> "ExecutionEventLedger":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _require_mutation_allowed(self) -> None:
+        if self._closed:
+            raise ExecutionEventLedgerError("execution event ledger is closed")
+        if self._persistence_health != PERSISTENCE_HEALTHY:
+            raise PersistenceStateUnknownError(
+                "persistent execution ledger state is unknown; full reload required"
+            )
+
+    def _persist_events(self, events: Iterable[ExecutionLedgerEvent]) -> None:
+        if self._ledger_path is None:
+            return
+        self._require_mutation_allowed()
+        materialized = tuple(events)
+        if not materialized:
+            return
+        try:
+            _append_persisted_event_lines(self._ledger_path, materialized)
+        except Exception as exc:
+            self._persistence_health = PERSISTENCE_STATE_UNKNOWN
+            self._unknown_persistence_sequence = materialized[0].sequence
+            raise PersistenceStateUnknownError(
+                "persistent execution ledger write outcome is unknown; mutation latched fail closed"
+            ) from exc
 
     def append_event(
         self,
@@ -157,6 +320,7 @@ class ExecutionEventLedger:
         requires_manual_review: bool = False,
         reason: str = "",
     ) -> ExecutionLedgerEvent:
+        self._require_mutation_allowed()
         normalized_key = canonical_setup_key.strip()
         normalized_event_type = event_type.strip().upper()
         if not normalized_key:
@@ -177,10 +341,8 @@ class ExecutionEventLedger:
             requires_manual_review=requires_manual_review,
             reason=reason,
         )
+        self._persist_events((event,))
         self._events.append(event)
-        if self._ledger_path is not None:
-            with self._ledger_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(asdict(event), sort_keys=True) + "\n")
         return event
 
     def append_recovery_decision(
@@ -217,8 +379,7 @@ class ExecutionEventLedger:
         recorded_at_utc: str | None = None,
         reason: str = "",
     ) -> ExecutionLedgerEvent:
-        """Validate and append one E23 lifecycle event using the canonical rules."""
-
+        self._require_mutation_allowed()
         validate_next_lifecycle_event(self._events, canonical_setup_key, event_type)
         return self.append_event(
             canonical_setup_key=canonical_setup_key,
@@ -235,25 +396,13 @@ class ExecutionEventLedger:
         recorded_at_utc: str | None = None,
         reason: str = "",
     ) -> tuple[ExecutionLedgerEvent, ...]:
-        """Perform one atomic in-memory validated lifecycle batch append.
-
-        The complete batch is normalized, materialized and validated against
-        the canonical E23 lifecycle authority before the real ledger is
-        mutated once with ``list.extend``. E24 does not add filesystem
-        transaction or persistence behavior.
-        """
-
+        self._require_mutation_allowed()
         normalized_key = canonical_setup_key.strip()
         if not normalized_key:
             raise ExecutionEventLedgerError("canonical_setup_key is required")
         normalized_types = tuple(str(value).strip().upper() for value in event_types)
         if not normalized_types:
             raise ExecutionEventLedgerError("event_types is required")
-        if self._ledger_path is not None:
-            raise ExecutionEventLedgerError(
-                "atomic lifecycle batch append is in-memory only"
-            )
-
         prospective_events = list(self._events)
         batch: list[ExecutionLedgerEvent] = []
         timestamp = recorded_at_utc or _utc_now()
@@ -263,9 +412,7 @@ class ExecutionEventLedger:
                 raise ExecutionEventLedgerError(
                     f"unsupported execution ledger event type: {event_type}"
                 )
-            validate_next_lifecycle_event(
-                prospective_events, normalized_key, event_type
-            )
+            validate_next_lifecycle_event(prospective_events, normalized_key, event_type)
             event = ExecutionLedgerEvent(
                 sequence=next_sequence + offset,
                 canonical_setup_key=normalized_key,
@@ -276,22 +423,145 @@ class ExecutionEventLedger:
             prospective_events.append(event)
             batch.append(event)
 
-        expected_sequences = tuple(
-            range(next_sequence, next_sequence + len(batch))
-        )
+        expected_sequences = tuple(range(next_sequence, next_sequence + len(batch)))
         actual_sequences = tuple(event.sequence for event in batch)
         if actual_sequences != expected_sequences:
             raise ExecutionEventLedgerError("non-contiguous lifecycle batch sequence")
 
+        self._persist_events(batch)
         self._extend_events_atomically(batch)
         return tuple(batch)
 
-    def _extend_events_atomically(
-        self, events: list[ExecutionLedgerEvent]
-    ) -> None:
-        """Single E24 in-memory mutation point, separated for failure probes."""
-
+    def _extend_events_atomically(self, events: list[ExecutionLedgerEvent]) -> None:
         self._events.extend(events)
+
+
+_EXECUTION_EVENT_FIELDS = frozenset(ExecutionLedgerEvent.__dataclass_fields__)
+
+def load_persisted_execution_events(path: str | Path) -> tuple[ExecutionLedgerEvent, ...]:
+    """Load and fully validate one executor-local JSONL ledger fail closed.
+
+    Recovery accepts only complete, schema-exact, globally contiguous records.
+    Every identity is replayed through the certified E23 lifecycle validator.
+    No ATS fact or missing lifecycle state is synthesized.
+    """
+
+    ledger_path = Path(path)
+    if not ledger_path.exists():
+        return ()
+    raw = ledger_path.read_bytes()
+    if not raw:
+        return ()
+    if not raw.endswith(b"\n"):
+        raise ExecutionEventLedgerError("truncated persisted execution ledger write")
+
+    events: list[ExecutionLedgerEvent] = []
+    seen_records: set[tuple[object, ...]] = set()
+    for line_number, raw_line in enumerate(raw.splitlines(), start=1):
+        if not raw_line.strip():
+            raise ExecutionEventLedgerError(
+                f"blank persisted execution ledger record at line {line_number}"
+            )
+        try:
+            decoded = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ExecutionEventLedgerError(
+                f"malformed persisted execution ledger record at line {line_number}"
+            ) from exc
+        if not isinstance(decoded, Mapping):
+            raise ExecutionEventLedgerError(
+                f"persisted execution ledger record must be an object at line {line_number}"
+            )
+        if frozenset(decoded) != _EXECUTION_EVENT_FIELDS:
+            raise ExecutionEventLedgerError(
+                f"persisted execution ledger schema mismatch at line {line_number}"
+            )
+
+        event = _execution_event_from_persisted_record(decoded, line_number)
+        expected_sequence = len(events) + 1
+        if event.sequence != expected_sequence:
+            raise ExecutionEventLedgerError(
+                f"persisted execution ledger sequence gap/conflict at line {line_number}: "
+                f"expected {expected_sequence}, got {event.sequence}"
+            )
+        fingerprint = tuple(asdict(event).items())
+        if fingerprint in seen_records:
+            raise ExecutionEventLedgerError(
+                f"duplicate persisted execution ledger record at line {line_number}"
+            )
+        seen_records.add(fingerprint)
+        events.append(event)
+
+    keys = sorted({event.canonical_setup_key for event in events})
+    for key in keys:
+        rebuild_execution_lifecycle_snapshot(events, key)
+        rebuild_execution_state_snapshot(events, key)
+    return tuple(events)
+
+
+def _execution_event_from_persisted_record(
+    record: Mapping[str, object], line_number: int
+) -> ExecutionLedgerEvent:
+    sequence = record.get("sequence")
+    if type(sequence) is not int or sequence < 1:
+        raise ExecutionEventLedgerError(
+            f"invalid persisted sequence at line {line_number}"
+        )
+    key = record.get("canonical_setup_key")
+    if not isinstance(key, str) or not key.strip() or key != key.strip():
+        raise ExecutionEventLedgerError(
+            f"invalid persisted canonical identity at line {line_number}"
+        )
+    event_type = record.get("event_type")
+    if not isinstance(event_type, str) or event_type not in SUPPORTED_EXECUTION_LEDGER_EVENTS:
+        raise ExecutionEventLedgerError(
+            f"unknown persisted execution event type at line {line_number}"
+        )
+    timestamp = record.get("recorded_at_utc")
+    if not isinstance(timestamp, str) or not timestamp:
+        raise ExecutionEventLedgerError(
+            f"invalid persisted timestamp at line {line_number}"
+        )
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ExecutionEventLedgerError(
+            f"malformed persisted timestamp at line {line_number}"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ExecutionEventLedgerError(
+            f"timezone-naive persisted timestamp at line {line_number}"
+        )
+
+    text_fields = ("symbol", "side", "client_order_id", "status", "reason")
+    for field_name in text_fields:
+        if not isinstance(record.get(field_name), str):
+            raise ExecutionEventLedgerError(
+                f"invalid persisted {field_name} at line {line_number}"
+            )
+    bool_fields = ("block_new_orders", "requires_manual_review")
+    for field_name in bool_fields:
+        if type(record.get(field_name)) is not bool:
+            raise ExecutionEventLedgerError(
+                f"invalid persisted {field_name} at line {line_number}"
+            )
+    return ExecutionLedgerEvent(**dict(record))
+
+
+def _append_persisted_event_lines(
+    path: Path, events: Iterable[ExecutionLedgerEvent]
+) -> None:
+    materialized = tuple(events)
+    if not materialized:
+        return
+    payload = "".join(
+        json.dumps(asdict(event), sort_keys=True) + "\n" for event in materialized
+    )
+    with path.open("a", encoding="utf-8", newline="") as fh:
+        written = fh.write(payload)
+        fh.flush()
+        if written != len(payload):
+            raise ExecutionEventLedgerError("incomplete persisted execution ledger write")
 
 
 def rebuild_execution_state_snapshot(
@@ -421,6 +691,17 @@ def rebuild_execution_state_snapshot(
             terminal_submit_failure = False
             block_new_orders = event.block_new_orders
             requires_manual_review = event.requires_manual_review
+        elif event.event_type == CLOSE_REQUESTED:
+            current_state = "CLOSE_REQUESTED"
+            block_new_orders = True
+        elif event.event_type == CLOSE_CONFIRMED:
+            current_state = "CLOSE_CONFIRMED"
+            block_new_orders = True
+        elif event.event_type == EXECUTION_COMPLETED:
+            current_state = "EXECUTION_COMPLETED"
+            terminal = True
+            block_new_orders = False
+            requires_manual_review = False
         else:  # pragma: no cover - append_event validates supported event types
             raise ExecutionEventLedgerError(f"unsupported execution ledger event type: {event.event_type}")
 

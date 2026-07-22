@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Mapping
 
 from .decision_consumer import DecisionConsumerError, consume_decision
@@ -37,22 +38,48 @@ class ExecutorShadowAdmissionResult:
 
 
 _SESSION_PAPER_EXECUTOR = None
+_SESSION_PAPER_EXECUTOR_LEDGER_PATH = None
 
 
-def _session_paper_executor():
-    """Return the E22.1 session-local paper executor without persistence."""
+def _release_session_paper_executor() -> None:
+    """Release mechanical persistent-ledger ownership for restart/shutdown."""
 
-    global _SESSION_PAPER_EXECUTOR
-    if _SESSION_PAPER_EXECUTOR is None:
+    global _SESSION_PAPER_EXECUTOR, _SESSION_PAPER_EXECUTOR_LEDGER_PATH
+    executor = _SESSION_PAPER_EXECUTOR
+    _SESSION_PAPER_EXECUTOR = None
+    _SESSION_PAPER_EXECUTOR_LEDGER_PATH = None
+    if executor is not None:
+        try:
+            executor.ledger.close()
+        except Exception:
+            pass
+
+
+def _session_paper_executor(ledger_path: str | Path | None = None):
+    """Return the session executor, recovering only validated persisted facts."""
+
+    global _SESSION_PAPER_EXECUTOR, _SESSION_PAPER_EXECUTOR_LEDGER_PATH
+    normalized_path = Path(ledger_path).resolve() if ledger_path is not None else None
+    if _SESSION_PAPER_EXECUTOR is None or normalized_path != _SESSION_PAPER_EXECUTOR_LEDGER_PATH:
+        if _SESSION_PAPER_EXECUTOR is not None:
+            _release_session_paper_executor()
         from .execution_event_ledger import ExecutionEventLedger
         from .execution_identity_registry import ExecutionIdentityRegistry
         from .paper_executor import PaperExecutor
 
+        ledger = ExecutionEventLedger(ledger_path=normalized_path)
+        registry = ExecutionIdentityRegistry()
+        registry.restore_validated_identities(
+            event.canonical_setup_key
+            for event in ledger.events
+            if event.event_type == "INTENT_ACCEPTED"
+        )
         _SESSION_PAPER_EXECUTOR = PaperExecutor(
-            ledger=ExecutionEventLedger(),
-            identity_registry=ExecutionIdentityRegistry(),
+            ledger=ledger,
+            identity_registry=registry,
             executor_mode="DRY_RUN",
         )
+        _SESSION_PAPER_EXECUTOR_LEDGER_PATH = normalized_path
     return _SESSION_PAPER_EXECUTOR
 
 
@@ -68,6 +95,7 @@ def evaluate_ats_shadow_admission(
     cycle_ts: object,
     checked_at_utc: str,
     paper_mode: bool = False,
+    executor_ledger_path: str | Path | None = None,
 ) -> ExecutorShadowAdmissionResult:
     """Run the E1 -> E2 -> E4 boundary without side effects.
 
@@ -146,7 +174,7 @@ def evaluate_ats_shadow_admission(
     try:
         from .paper_executor import PaperExecutionRequest
 
-        executor = _session_paper_executor()
+        executor = _session_paper_executor(executor_ledger_path)
         paper_started = True
         paper_duplicate_blocked = executor.identity_registry.contains(
             validated.canonical_setup_key
@@ -287,6 +315,7 @@ def observe_ats_position_closed(
     status: object,
     closed_at_utc: object,
     close_reason: object,
+    executor_ledger_path: str | Path | None = None,
 ) -> ExecutorCloseObservationResult:
     """Validate and record a close already persisted by authoritative ATS."""
 
@@ -308,7 +337,7 @@ def observe_ats_position_closed(
         )
 
     try:
-        executor = _session_paper_executor()
+        executor = _session_paper_executor(executor_ledger_path)
         before = executor.lifecycle_snapshot(payload.canonical_setup_key)
         if before.completed:
             prior_timestamp, prior_reason = _completed_close_metadata(

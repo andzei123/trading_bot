@@ -128,6 +128,7 @@ def main() -> None:
             immutable_snapshot = True
 
         after_production_probe = set(Path("backtest").rglob("live_rotation_plan.csv"))
+        executor.ledger.close()
 
     filled_events = [event for event in ledger_events if event.canonical_setup_key == filled_intent.canonical_setup_key]
     timeout_events = [event for event in ledger_events if event.canonical_setup_key == timeout_key]

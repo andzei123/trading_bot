@@ -282,6 +282,7 @@ def main() -> None:
         assert replace(intent) == intent
         assert replace(command) == command
         assert replace(recon) == recon
+        ledger.close()
 
     after_files = _file_snapshot()
     production_files_modified = int(before_files != after_files)
