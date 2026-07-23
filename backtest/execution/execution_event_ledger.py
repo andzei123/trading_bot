@@ -6,7 +6,7 @@ import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping, Protocol
 
 from .recovery_simulator import RecoveryDecision
 
@@ -29,6 +29,31 @@ class LedgerWriterOwnershipError(ExecutionEventLedgerError):
 
 PERSISTENCE_HEALTHY = "PERSISTENCE_HEALTHY"
 PERSISTENCE_STATE_UNKNOWN = "PERSISTENCE_STATE_UNKNOWN"
+
+PERSISTENCE_VALID = "VALID"
+PERSISTENCE_INCOMPLETE = "INCOMPLETE"
+PERSISTENCE_CORRUPTED = "CORRUPTED"
+PERSISTENCE_UNKNOWN = "UNKNOWN"
+
+BEFORE_TEMP_CREATE = "BEFORE_TEMP_CREATE"
+TEMP_WRITING = "TEMP_WRITING"
+TEMP_FLUSHED = "TEMP_FLUSHED"
+BEFORE_REPLACE = "BEFORE_REPLACE"
+REPLACE_RETURNED = "REPLACE_RETURNED"
+COMMITTED_FILE_FLUSHED = "COMMITTED_FILE_FLUSHED"
+COMMIT_ACKNOWLEDGED = "COMMIT_ACKNOWLEDGED"
+
+
+@dataclass(frozen=True)
+class PersistenceIntegrityReport:
+    """Deterministic startup classification for Executor-owned persistence."""
+
+    status: str
+    reason: str
+    event_count: int
+    main_path: str
+    temporary_path: str
+
 
 
 _PROCESS_WRITER_PATHS: set[str] = set()
@@ -233,17 +258,28 @@ class ExecutionEventLedger:
     ``PERSISTENCE_STATE_UNKNOWN``; no later mutation or retry is allowed.
     """
 
-    def __init__(self, ledger_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        ledger_path: str | Path | None = None,
+        *,
+        persistence_phase_observer: Callable[[str], None] | None = None,
+    ) -> None:
         self._events: list[ExecutionLedgerEvent] = []
         self._ledger_path = Path(ledger_path).resolve() if ledger_path is not None else None
         self._writer_ownership: _LedgerWriterOwnership | None = None
         self._persistence_health = PERSISTENCE_HEALTHY
         self._unknown_persistence_sequence: int | None = None
         self._closed = False
+        self._persistence_phase_observer = persistence_phase_observer
         if self._ledger_path is not None:
             self._writer_ownership = _LedgerWriterOwnership(self._ledger_path)
             try:
                 self._ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                integrity = inspect_persisted_execution_integrity(self._ledger_path)
+                if integrity.status != PERSISTENCE_VALID:
+                    raise ExecutionEventLedgerError(
+                        f"persistent execution ledger integrity is {integrity.status}: {integrity.reason}"
+                    )
                 if self._ledger_path.exists() and self._ledger_path.stat().st_size:
                     self._events = list(load_persisted_execution_events(self._ledger_path))
             except Exception:
@@ -298,7 +334,11 @@ class ExecutionEventLedger:
         if not materialized:
             return
         try:
-            _append_persisted_event_lines(self._ledger_path, materialized)
+            _append_persisted_event_lines(
+                self._ledger_path,
+                tuple(self._events) + materialized,
+                phase_observer=self._persistence_phase_observer,
+            )
         except Exception as exc:
             self._persistence_health = PERSISTENCE_STATE_UNKNOWN
             self._unknown_persistence_sequence = materialized[0].sequence
@@ -343,6 +383,7 @@ class ExecutionEventLedger:
         )
         self._persist_events((event,))
         self._events.append(event)
+        _emit_persistence_phase(self._persistence_phase_observer, COMMIT_ACKNOWLEDGED)
         return event
 
     def append_recovery_decision(
@@ -430,6 +471,7 @@ class ExecutionEventLedger:
 
         self._persist_events(batch)
         self._extend_events_atomically(batch)
+        _emit_persistence_phase(self._persistence_phase_observer, COMMIT_ACKNOWLEDGED)
         return tuple(batch)
 
     def _extend_events_atomically(self, events: list[ExecutionLedgerEvent]) -> None:
@@ -438,18 +480,80 @@ class ExecutionEventLedger:
 
 _EXECUTION_EVENT_FIELDS = frozenset(ExecutionLedgerEvent.__dataclass_fields__)
 
-def load_persisted_execution_events(path: str | Path) -> tuple[ExecutionLedgerEvent, ...]:
-    """Load and fully validate one executor-local JSONL ledger fail closed.
+def _persistence_temp_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.tmp")
 
-    Recovery accepts only complete, schema-exact, globally contiguous records.
-    Every identity is replayed through the certified E23 lifecycle validator.
-    No ATS fact or missing lifecycle state is synthesized.
-    """
+
+def inspect_persisted_execution_integrity(path: str | Path) -> PersistenceIntegrityReport:
+    """Classify persistent state without synthesizing or repairing history."""
 
     ledger_path = Path(path)
+    temp_path = _persistence_temp_path(ledger_path)
+    if temp_path.exists():
+        return PersistenceIntegrityReport(
+            status=PERSISTENCE_INCOMPLETE,
+            reason="interrupted durable replacement artifact exists",
+            event_count=0,
+            main_path=str(ledger_path),
+            temporary_path=str(temp_path),
+        )
+    if not ledger_path.exists():
+        return PersistenceIntegrityReport(
+            status=PERSISTENCE_VALID,
+            reason="no persisted history",
+            event_count=0,
+            main_path=str(ledger_path),
+            temporary_path=str(temp_path),
+        )
+    try:
+        raw = ledger_path.read_bytes()
+    except OSError as exc:
+        return PersistenceIntegrityReport(
+            status=PERSISTENCE_UNKNOWN,
+            reason=f"persistent history could not be read: {type(exc).__name__}",
+            event_count=0,
+            main_path=str(ledger_path),
+            temporary_path=str(temp_path),
+        )
+    try:
+        events = _parse_persisted_execution_events(raw)
+    except ExecutionEventLedgerError as exc:
+        status = (
+            PERSISTENCE_INCOMPLETE
+            if raw and not raw.endswith(b"\n")
+            else PERSISTENCE_CORRUPTED
+        )
+        return PersistenceIntegrityReport(
+            status=status,
+            reason=str(exc),
+            event_count=0,
+            main_path=str(ledger_path),
+            temporary_path=str(temp_path),
+        )
+    return PersistenceIntegrityReport(
+        status=PERSISTENCE_VALID,
+        reason="validated durable history",
+        event_count=len(events),
+        main_path=str(ledger_path),
+        temporary_path=str(temp_path),
+    )
+
+
+def load_persisted_execution_events(path: str | Path) -> tuple[ExecutionLedgerEvent, ...]:
+    """Load one complete, schema-exact and lifecycle-valid durable ledger."""
+
+    ledger_path = Path(path)
+    integrity = inspect_persisted_execution_integrity(ledger_path)
+    if integrity.status != PERSISTENCE_VALID:
+        raise ExecutionEventLedgerError(
+            f"persistent execution ledger integrity is {integrity.status}: {integrity.reason}"
+        )
     if not ledger_path.exists():
         return ()
-    raw = ledger_path.read_bytes()
+    return _parse_persisted_execution_events(ledger_path.read_bytes())
+
+
+def _parse_persisted_execution_events(raw: bytes) -> tuple[ExecutionLedgerEvent, ...]:
     if not raw:
         return ()
     if not raw.endswith(b"\n"):
@@ -548,21 +652,194 @@ def _execution_event_from_persisted_record(
     return ExecutionLedgerEvent(**dict(record))
 
 
-def _append_persisted_event_lines(
-    path: Path, events: Iterable[ExecutionLedgerEvent]
+class _DurabilityAdapter(Protocol):
+    """Platform boundary for durable file flush and atomic replacement."""
+
+    runtime_evidence: str
+
+    def flush_file(self, handle) -> None: ...
+
+    def replace(self, temp_path: Path, destination_path: Path) -> None: ...
+
+    def flush_directory(self, directory_path: Path) -> None: ...
+
+
+class _PosixDurabilityAdapter:
+    runtime_evidence = "POSIX RUNTIME EVIDENCE"
+
+    def flush_file(self, handle) -> None:
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    def replace(self, temp_path: Path, destination_path: Path) -> None:
+        os.replace(temp_path, destination_path)
+
+    def flush_directory(self, directory_path: Path) -> None:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        descriptor = os.open(directory_path, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+class _WindowsDurabilityAdapter:
+    """Minimal Win32 durability adapter.
+
+    Uses FlushFileBuffers for file handles and MoveFileExW with
+    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH for same-volume atomic
+    namespace replacement. Win32 success is checked strictly; failures include
+    GetLastError through ctypes.WinError. Device/controller caches may still
+    require hardware support and external hard-power-off validation.
+    """
+
+    runtime_evidence = "WINDOWS RUNTIME EVIDENCE"
+    MOVEFILE_REPLACE_EXISTING = 0x00000001
+    MOVEFILE_WRITE_THROUGH = 0x00000008
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise OSError("Win32 durability adapter requires Windows")
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._flush_file_buffers = self._kernel32.FlushFileBuffers
+        self._flush_file_buffers.argtypes = [wintypes.HANDLE]
+        self._flush_file_buffers.restype = wintypes.BOOL
+        self._move_file_ex = self._kernel32.MoveFileExW
+        self._move_file_ex.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        self._move_file_ex.restype = wintypes.BOOL
+
+    def flush_file(self, handle) -> None:
+        import msvcrt
+
+        handle.flush()
+        os_handle = msvcrt.get_osfhandle(handle.fileno())
+        if not self._flush_file_buffers(os_handle):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def replace(self, temp_path: Path, destination_path: Path) -> None:
+        flags = self.MOVEFILE_REPLACE_EXISTING | self.MOVEFILE_WRITE_THROUGH
+        if not self._move_file_ex(str(temp_path), str(destination_path), flags):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def flush_directory(self, directory_path: Path) -> None:
+        # MoveFileExW(MOVEFILE_WRITE_THROUGH) is the documented Windows
+        # namespace write-through primitive used here. Windows directory
+        # handles are not treated as a portable FlushFileBuffers contract.
+        return None
+
+
+def _platform_durability_adapter() -> _DurabilityAdapter:
+    if os.name == "nt":
+        return _WindowsDurabilityAdapter()
+    return _PosixDurabilityAdapter()
+
+
+def _emit_persistence_phase(
+    observer: Callable[[str], None] | None, phase: str
 ) -> None:
+    if observer is not None:
+        observer(phase)
+
+
+def _same_directory_same_volume(temp_path: Path, destination_path: Path) -> None:
+    if temp_path.parent.resolve() != destination_path.parent.resolve():
+        raise ExecutionEventLedgerError(
+            "durable replacement requires the same directory"
+        )
+    if os.path.splitdrive(str(temp_path.resolve()))[0].lower() != os.path.splitdrive(
+        str(destination_path.resolve())
+    )[0].lower():
+        raise ExecutionEventLedgerError(
+            "durable replacement requires the same volume"
+        )
+
+
+def _durable_replace(
+    temp_path: Path,
+    destination_path: Path,
+    *,
+    adapter: _DurabilityAdapter | None = None,
+    phase_observer: Callable[[str], None] | None = None,
+) -> None:
+    """Atomically replace one complete ledger and acknowledge durability."""
+
+    _same_directory_same_volume(temp_path, destination_path)
+    durability = adapter or _platform_durability_adapter()
+    _emit_persistence_phase(phase_observer, BEFORE_REPLACE)
+    durability.replace(temp_path, destination_path)
+    _emit_persistence_phase(phase_observer, REPLACE_RETURNED)
+    # FlushFileBuffers requires a Windows handle opened with write access.
+    # The file contents are not modified; r+b only supplies the required
+    # handle capability for the post-replace durability acknowledgement.
+    with destination_path.open("r+b") as committed:
+        durability.flush_file(committed)
+    _emit_persistence_phase(phase_observer, COMMITTED_FILE_FLUSHED)
+    durability.flush_directory(destination_path.parent)
+
+
+def _append_persisted_event_lines(
+    path: Path,
+    events: Iterable[ExecutionLedgerEvent],
+    *,
+    phase_observer: Callable[[str], None] | None = None,
+    adapter: _DurabilityAdapter | None = None,
+) -> None:
+    """Durably replace the whole ledger through a same-directory temp file."""
+
     materialized = tuple(events)
-    if not materialized:
-        return
     payload = "".join(
         json.dumps(asdict(event), sort_keys=True) + "\n" for event in materialized
     )
-    with path.open("a", encoding="utf-8", newline="") as fh:
-        written = fh.write(payload)
-        fh.flush()
-        if written != len(payload):
-            raise ExecutionEventLedgerError("incomplete persisted execution ledger write")
+    temp_path = _persistence_temp_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if temp_path.exists():
+        raise ExecutionEventLedgerError(
+            "interrupted durable replacement artifact already exists"
+        )
 
+    _same_directory_same_volume(temp_path, path)
+    _emit_persistence_phase(phase_observer, BEFORE_TEMP_CREATE)
+    with temp_path.open("x", encoding="utf-8", newline="") as handle:
+        _emit_persistence_phase(phase_observer, TEMP_WRITING)
+        written = handle.write(payload)
+        if written != len(payload):
+            raise ExecutionEventLedgerError("incomplete durable ledger replacement write")
+        (adapter or _platform_durability_adapter()).flush_file(handle)
+    _emit_persistence_phase(phase_observer, TEMP_FLUSHED)
+    _durable_replace(
+        temp_path,
+        path,
+        adapter=adapter,
+        phase_observer=phase_observer,
+    )
+
+
+
+def write_durable_json_metadata(path: str | Path, payload: Mapping[str, object]) -> None:
+    """Durably replace one machine-readable harness metadata document."""
+
+    destination = Path(path)
+    temp_path = destination.with_name(destination.name + ".tmp")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if temp_path.exists():
+        raise ExecutionEventLedgerError(
+            f"interrupted durable metadata artifact already exists: {temp_path}"
+        )
+    serialized = json.dumps(dict(payload), sort_keys=True) + "\n"
+    adapter = _platform_durability_adapter()
+    _same_directory_same_volume(temp_path, destination)
+    with temp_path.open("x", encoding="utf-8", newline="") as handle:
+        written = handle.write(serialized)
+        if written != len(serialized):
+            raise ExecutionEventLedgerError("incomplete durable metadata write")
+        adapter.flush_file(handle)
+    _durable_replace(temp_path, destination, adapter=adapter)
 
 def rebuild_execution_state_snapshot(
     events: Iterable[ExecutionLedgerEvent],
