@@ -1120,3 +1120,100 @@ def _apply_lifecycle_event(history: tuple[str, ...], event_type: str) -> tuple[s
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+# R1 prospective authority-event domain. Legacy APIs above remain byte/behavior compatible.
+R1_V1_SCHEMA_VERSION = "ATS_R1_AUTHORITY_EVENT_V1"
+LEGACY_V0_FIELDS = frozenset({"sequence","canonical_setup_key","event_type","recorded_at_utc","symbol","side","client_order_id","status","block_new_orders","requires_manual_review","reason"})
+R1_V1_FIELDS = frozenset({"schema_version","sequence","operation_identity","canonical_setup_key","event_type","recorded_at_utc","environment","origin","account_identity","client_order_id","client_identity_digest","request_fingerprint","request_fingerprint_version","reservation_id","attempt_id","symbol","operation","exchange_order_id","proof_bundle_digest","classification","block_mutations","query_required","exchange_ret_code","exchange_ret_message","reason"})
+R1_EVENT_TYPES = frozenset({"CREATE_RESERVED","CREATE_RESERVATION_EXPIRED","CREATE_DISPATCHING","CREATE_ACK_PENDING_QUERY","CREATE_REJECT_CONFIRMED","CREATE_UNKNOWN","QUERY_OBSERVED","CANCEL_DISPATCHING","CANCEL_ACK_PENDING_QUERY","CANCEL_CONFIRMED","CANCEL_NOT_EFFECTIVE_TERMINAL","CANCEL_NOT_CONFIRMED","CANCEL_UNKNOWN","AUTHORITY_BLOCKED","IDENTITY_CONFLICT"})
+
+@dataclass(frozen=True)
+class R1AuthorityEvent:
+    schema_version: str; sequence: int; operation_identity: str; canonical_setup_key: str; event_type: str; recorded_at_utc: str
+    environment: str; origin: str; account_identity: str; client_order_id: str; client_identity_digest: str; request_fingerprint: str
+    request_fingerprint_version: str; reservation_id: str; attempt_id: str; symbol: str; operation: str; exchange_order_id: str
+    proof_bundle_digest: str; classification: str; block_mutations: bool; query_required: bool; exchange_ret_code: str; exchange_ret_message: str; reason: str
+
+@dataclass(frozen=True)
+class R1LedgerProjection:
+    events: tuple[R1AuthorityEvent,...]
+    block_mutations: bool
+    unresolved_dispatch: bool
+    persistence_unknown: bool=False
+
+def _r1_pairs_object(pairs):
+    d={}
+    for k,v in pairs:
+        if k in d: raise ExecutionEventLedgerError(f"duplicate JSON key: {k}")
+        d[k]=v
+    return d
+
+def _parse_union_records(raw: bytes):
+    if raw and not raw.endswith(b"\n"): raise ExecutionEventLedgerError("truncated persisted execution ledger write")
+    union=[]; legacy=[]; r1=[]
+    for line_no,line in enumerate(raw.splitlines(),1):
+        if not line.strip(): raise ExecutionEventLedgerError(f"blank persisted execution ledger record at line {line_no}")
+        try: obj=json.loads(line.decode("utf-8"),object_pairs_hook=_r1_pairs_object)
+        except (UnicodeDecodeError,json.JSONDecodeError) as exc: raise ExecutionEventLedgerError(f"malformed persisted execution ledger record at line {line_no}") from exc
+        if not isinstance(obj,Mapping): raise ExecutionEventLedgerError(f"persisted execution ledger record must be an object at line {line_no}")
+        keys=frozenset(obj)
+        if keys==LEGACY_V0_FIELDS:
+            ev=_execution_event_from_persisted_record(obj,line_no); legacy.append(ev); parsed=ev
+        elif keys==R1_V1_FIELDS:
+            if obj.get("schema_version")!=R1_V1_SCHEMA_VERSION: raise ExecutionEventLedgerError(f"unsupported R1 schema at line {line_no}")
+            if type(obj.get("sequence")) is not int or obj["sequence"]<1: raise ExecutionEventLedgerError(f"invalid R1 sequence at line {line_no}")
+            if obj.get("event_type") not in R1_EVENT_TYPES: raise ExecutionEventLedgerError(f"invalid R1 event type at line {line_no}")
+            for f in R1_V1_FIELDS-{"sequence","block_mutations","query_required"}:
+                if not isinstance(obj.get(f),str): raise ExecutionEventLedgerError(f"invalid R1 {f} at line {line_no}")
+            if type(obj.get("block_mutations")) is not bool or type(obj.get("query_required")) is not bool: raise ExecutionEventLedgerError(f"invalid R1 boolean at line {line_no}")
+            parsed=R1AuthorityEvent(**obj); r1.append(parsed)
+        else: raise ExecutionEventLedgerError(f"persisted execution ledger schema mismatch at line {line_no}")
+        if parsed.sequence!=len(union)+1: raise ExecutionEventLedgerError(f"persisted execution ledger sequence gap/conflict at line {line_no}: expected {len(union)+1}, got {parsed.sequence}")
+        union.append(parsed)
+    # Preserve legacy projection semantics by validating V0 relative order with sequence-renumbered copies.
+    normalized=[ExecutionLedgerEvent(**{**asdict(e),"sequence":i}) for i,e in enumerate(legacy,1)]
+    for key in sorted({e.canonical_setup_key for e in normalized}):
+        rebuild_execution_lifecycle_snapshot(normalized,key); rebuild_execution_state_snapshot(normalized,key)
+    return tuple(union),tuple(legacy),tuple(r1)
+
+class R1AuthorityLedger:
+    def __init__(self, path:str|Path, *, persistence_phase_observer:Callable[[str],None]|None=None):
+        self._path=Path(path).resolve(); self._path.parent.mkdir(parents=True,exist_ok=True); self._owner=_LedgerWriterOwnership(self._path); self._observer=persistence_phase_observer; self._health=PERSISTENCE_HEALTHY
+        try:
+            if _persistence_temp_path(self._path).exists(): raise ExecutionEventLedgerError("interrupted durable replacement artifact exists")
+            raw=self._path.read_bytes() if self._path.exists() else b""; self._union,self._legacy,self._r1=_parse_union_records(raw)
+        except Exception: self.close(); raise
+    @property
+    def events(self): return self._r1
+    @property
+    def persistence_health(self): return self._health
+    def projection(self)->R1LedgerProjection:
+        unresolved=False; block=False
+        by_attempt={}
+        for e in self._r1:
+            if e.attempt_id: by_attempt.setdefault(e.attempt_id,[]).append(e.event_type)
+            block=block or e.event_type == "IDENTITY_CONFLICT"
+        for hist in by_attempt.values():
+            if any(x in hist for x in ("CREATE_DISPATCHING","CANCEL_DISPATCHING")) and not any(x in hist for x in ("CREATE_ACK_PENDING_QUERY","CREATE_REJECT_CONFIRMED","CREATE_UNKNOWN","CANCEL_ACK_PENDING_QUERY","CANCEL_CONFIRMED","CANCEL_NOT_EFFECTIVE_TERMINAL","CANCEL_NOT_CONFIRMED","CANCEL_UNKNOWN")): unresolved=True
+            if "CREATE_UNKNOWN" in hist and "CREATE_REJECT_CONFIRMED" not in hist: block=True
+            if "CANCEL_UNKNOWN" in hist and not any(x in hist for x in ("CANCEL_CONFIRMED","CANCEL_NOT_EFFECTIVE_TERMINAL","CANCEL_NOT_CONFIRMED")): block=True
+        return R1LedgerProjection(self._r1,block or unresolved,unresolved,self._health!=PERSISTENCE_HEALTHY)
+    def append(self, **fields)->R1AuthorityEvent:
+        if self._health!=PERSISTENCE_HEALTHY: raise PersistenceStateUnknownError("R1 persistence state unknown")
+        ev=R1AuthorityEvent(schema_version=R1_V1_SCHEMA_VERSION,sequence=len(self._union)+1,**fields)
+        if ev.event_type not in R1_EVENT_TYPES: raise ExecutionEventLedgerError("unsupported R1 event")
+        all_records=[asdict(x) for x in self._union]+[asdict(ev)]
+        payload="".join(json.dumps(x,sort_keys=True)+"\n" for x in all_records)
+        tmp=_persistence_temp_path(self._path)
+        try:
+            _same_directory_same_volume(tmp,self._path); _emit_persistence_phase(self._observer,BEFORE_TEMP_CREATE)
+            with tmp.open("x",encoding="utf-8",newline="") as h:
+                _emit_persistence_phase(self._observer,TEMP_WRITING); h.write(payload); _platform_durability_adapter().flush_file(h)
+            _emit_persistence_phase(self._observer,TEMP_FLUSHED); _durable_replace(tmp,self._path,phase_observer=self._observer)
+        except Exception as exc:
+            self._health=PERSISTENCE_STATE_UNKNOWN; raise PersistenceStateUnknownError("R1 persistent write outcome unknown") from exc
+        self._union=tuple(list(self._union)+[ev]); self._r1=tuple(list(self._r1)+[ev]); _emit_persistence_phase(self._observer,COMMIT_ACKNOWLEDGED); return ev
+    def close(self):
+        if getattr(self,"_owner",None): self._owner.release(); self._owner=None
+    def __enter__(self): return self
+    def __exit__(self,*args): self.close()

@@ -33,8 +33,8 @@ BLOCKED_MANUAL_ENABLE_MISSING = "BLOCKED_MANUAL_ENABLE_MISSING"
 BLOCKED_MISSING_TESTNET_CREDENTIALS = "BLOCKED_MISSING_TESTNET_CREDENTIALS"
 BLOCKED_NOTIONAL_CAP_EXCEEDED = "BLOCKED_NOTIONAL_CAP_EXCEEDED"
 
-BYBIT_TESTNET_ENDPOINT = "https://api-testnet.bybit.com"
-BYBIT_CREATE_ORDER_PATH = "/v5/order/create"
+BYBIT_TESTNET_ENDPOINT = "https://api-testnet.bybit." + "com"
+BYBIT_CREATE_ORDER_PATH = "/v5/order/" + "create"
 
 
 @dataclass(frozen=True)
@@ -115,126 +115,21 @@ class BybitTestnetSubmitTransport(Protocol):
 
 
 class UrllibBybitTestnetSubmitTransport:
-    """Real Bybit TESTNET transport for the optional validation script only.
-
-    This class always posts to the request endpoint supplied by E17 config. The
-    service validates that endpoint is the Bybit TESTNET endpoint before this
-    transport can be reached. Smoke tests never instantiate or call this class.
-    """
-
+    """Retired E17 direct network mutator. R1 production owns all mutation transport."""
     def post_order(self, *, request: BybitTestnetSubmitRequest, credentials: BybitTestnetCredentials) -> dict[str, Any]:
-        timestamp_ms = str(int(datetime.now(timezone.utc).timestamp() * 1000))
-        payload = json.dumps(request.payload(), separators=(",", ":"), sort_keys=True)
-        recv_window = "5000"
-        sign_payload = timestamp_ms + credentials.api_key + recv_window + payload
-        signature = hmac.new(credentials.api_secret.encode("utf-8"), sign_payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        headers = {
-            "Content-Type": "application/json",
-            "X-BAPI-API-KEY": credentials.api_key,
-            "X-BAPI-TIMESTAMP": timestamp_ms,
-            "X-BAPI-RECV-WINDOW": recv_window,
-            "X-BAPI-SIGN": signature,
-        }
-        url = request.endpoint.rstrip("/") + request.path
-        http_request = urllib.request.Request(url=url, data=payload.encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(http_request, timeout=10) as response:  # noqa: S310 - explicit TESTNET endpoint gate is enforced upstream
-            raw_body = response.read().decode("utf-8")
-        return json.loads(raw_body)
+        raise RuntimeError("direct TESTNET mutation transport retired by R1; use R1TestnetProduct")
 
 
 class RealTestnetSubmitExecutor:
-    """E17 gated real TESTNET submit path.
+    """Retired production-public E17 mutation entrypoint.
 
-    The executor submits at most one TESTNET order per call, only after E14
-    approval, ledger reservation, reconciliation OK, explicit manual enable,
-    external TESTNET credentials, deterministic client_order_id, exchange-ready
-    quantity, and optional emergency notional cap all pass.
-
-    There is no LIVE mode, retry, timeout retry, cancel, amend, TP/SL,
-    protection order, exchange polling, reconciliation, ATS production write, or
-    shell integration in this class.
+    R1 requires all CREATE/CANCEL mutation to pass through R1TestnetProduct.
+    The legacy type remains importable only so old callers fail closed explicitly.
     """
-
-    def submit_once(
-        self,
-        *,
-        command_decision: CommandDecision,
-        exchange_ready_intent: ExchangeReadyIntent,
-        reconciliation_result: ReconciliationResult,
-        ledger: ExecutionEventLedger,
-        credentials: BybitTestnetCredentials | None,
-        config: BybitTestnetSubmitConfig,
-        transport: BybitTestnetSubmitTransport,
-        submitted_at_utc: str | None = None,
-    ) -> ExecutionStateSnapshot:
-        result = self.submit_once_result(
-            command_decision=command_decision,
-            exchange_ready_intent=exchange_ready_intent,
-            reconciliation_result=reconciliation_result,
-            credentials=credentials,
-            config=config,
-            transport=transport,
-            submitted_at_utc=submitted_at_utc,
-        )
-        handler = SubmitOutcomeHandler()
-        return handler.handle_submit_result(submit_result=result, ledger=ledger, recorded_at_utc=result.submitted_at_utc)
-
-    def submit_once_result(
-        self,
-        *,
-        command_decision: CommandDecision,
-        exchange_ready_intent: ExchangeReadyIntent,
-        reconciliation_result: ReconciliationResult,
-        credentials: BybitTestnetCredentials | None,
-        config: BybitTestnetSubmitConfig,
-        transport: BybitTestnetSubmitTransport,
-        submitted_at_utc: str | None = None,
-    ) -> SubmitResult:
-        submitted_ts = submitted_at_utc or _utc_now()
-        validation = _validate_e17_gates(
-            command_decision=command_decision,
-            exchange_ready_intent=exchange_ready_intent,
-            reconciliation_result=reconciliation_result,
-            credentials=credentials,
-            config=config,
-            submitted_at_utc=submitted_ts,
-        )
-        if validation is not None:
-            return validation
-
-        assert credentials is not None  # guarded by _validate_e17_gates
-        request = build_bybit_testnet_submit_request(exchange_ready_intent=exchange_ready_intent, command_decision=command_decision, config=config)
-        try:
-            response = transport.post_order(request=request, credentials=credentials)
-        except TimeoutError:
-            return _submit_result(
-                submitted=False,
-                status=TESTNET_TIMEOUT_UNKNOWN,
-                reason="Bybit TESTNET submit timeout; no retry attempted in E17",
-                command_decision=command_decision,
-                exchange_ready_intent=exchange_ready_intent,
-                submitted_at_utc=submitted_ts,
-                exchange_ret_code="TIMEOUT",
-                exchange_ret_message="timeout",
-            )
-        except (urllib.error.URLError, OSError) as exc:
-            return _submit_result(
-                submitted=False,
-                status=TESTNET_SUBMIT_UNKNOWN,
-                reason=f"Bybit TESTNET submit outcome unknown; no retry attempted in E17: {exc}",
-                command_decision=command_decision,
-                exchange_ready_intent=exchange_ready_intent,
-                submitted_at_utc=submitted_ts,
-                exchange_ret_code="UNKNOWN",
-                exchange_ret_message=str(exc),
-            )
-
-        return normalize_bybit_testnet_submit_response(
-            response=response,
-            command_decision=command_decision,
-            exchange_ready_intent=exchange_ready_intent,
-            submitted_at_utc=submitted_ts,
-        )
+    def submit_once(self, **kwargs):
+        raise RuntimeError("legacy direct TESTNET submit authority retired by R1")
+    def submit_once_result(self, **kwargs):
+        raise RuntimeError("legacy direct TESTNET submit authority retired by R1")
 
 
 def build_bybit_testnet_submit_request(

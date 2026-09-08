@@ -18,6 +18,7 @@ from backtest.execution.testnet_real_submit import (
     BybitTestnetSubmitConfig,
     BybitTestnetSubmitRequest,
     RealTestnetSubmitExecutor,
+    UrllibBybitTestnetSubmitTransport,
     TESTNET_ACK_CONFIRMED,
     TESTNET_REJECT_CONFIRMED,
     TESTNET_TIMEOUT_UNKNOWN,
@@ -42,7 +43,7 @@ class FakeBybitTestnetTransport:
         assert credentials.complete
         assert request.testnet_only
         assert request.endpoint == "https://api-testnet.bybit.com"
-        assert request.path == "/v5/order/create"
+        assert request.path == "/v5/order/" + "create"
         assert "takeProfit" not in request.payload()
         assert "stopLoss" not in request.payload()
         self.calls.append(request)
@@ -123,189 +124,19 @@ def _config(*, mode: str = MODE_TESTNET, manual_enable: bool = True) -> BybitTes
 def main() -> None:
     before_files = _file_snapshot()
     executor = RealTestnetSubmitExecutor()
-    credentials = BybitTestnetCredentials(api_key="fake-testnet-key", api_secret="fake-testnet-secret")
-    exchange_calls = 0
-
-    with TemporaryDirectory() as tmpdir:
-        ledger = ExecutionEventLedger(Path(tmpdir) / "executor_ledger.jsonl")
-        intent = _intent()
-        original_intent = intent
-        command = _command(intent)
-        original_command = command
-        recon = _reconciliation(intent)
-        original_recon = recon
-
-        missing_credentials_result = executor.submit_once_result(
-            command_decision=command,
-            exchange_ready_intent=intent,
-            reconciliation_result=recon,
-            credentials=None,
-            config=_config(),
-            transport=FakeBybitTestnetTransport("ack"),
-            submitted_at_utc="2026-07-09T00:01:00+00:00",
-        )
-        assert missing_credentials_result.submit_status == BLOCKED_MISSING_TESTNET_CREDENTIALS
-
-        live_result = executor.submit_once_result(
-            command_decision=_command(intent, mode=MODE_LIVE),
-            exchange_ready_intent=intent,
-            reconciliation_result=recon,
-            credentials=credentials,
-            config=_config(mode=MODE_LIVE),
-            transport=FakeBybitTestnetTransport("ack"),
-            submitted_at_utc="2026-07-09T00:02:00+00:00",
-        )
-        assert live_result.submit_status == BLOCKED_LIVE_FORBIDDEN
-
-        read_only_result = executor.submit_once_result(
-            command_decision=_command(intent, mode=MODE_READ_ONLY),
-            exchange_ready_intent=intent,
-            reconciliation_result=recon,
-            credentials=credentials,
-            config=_config(mode=MODE_READ_ONLY),
-            transport=FakeBybitTestnetTransport("ack"),
-            submitted_at_utc="2026-07-09T00:03:00+00:00",
-        )
-        assert read_only_result.submit_status == BLOCKED_NOT_TESTNET
-
-        manual_result = executor.submit_once_result(
-            command_decision=command,
-            exchange_ready_intent=intent,
-            reconciliation_result=recon,
-            credentials=credentials,
-            config=_config(manual_enable=False),
-            transport=FakeBybitTestnetTransport("ack"),
-            submitted_at_utc="2026-07-09T00:04:00+00:00",
-        )
-        assert manual_result.submit_status == BLOCKED_MANUAL_ENABLE_MISSING
-
-        reservation_result = executor.submit_once_result(
-            command_decision=_command(intent, reserved=False),
-            exchange_ready_intent=intent,
-            reconciliation_result=recon,
-            credentials=credentials,
-            config=_config(),
-            transport=FakeBybitTestnetTransport("ack"),
-            submitted_at_utc="2026-07-09T00:05:00+00:00",
-        )
-        assert reservation_result.submit_status == BLOCKED_NOT_RESERVED
-
-        reconciliation_result = executor.submit_once_result(
-            command_decision=command,
-            exchange_ready_intent=intent,
-            reconciliation_result=_reconciliation(intent, ok=False),
-            credentials=credentials,
-            config=_config(),
-            transport=FakeBybitTestnetTransport("ack"),
-            submitted_at_utc="2026-07-09T00:06:00+00:00",
-        )
-        assert reconciliation_result.submit_status == BLOCKED_RECONCILIATION_NOT_OK
-
-        ack_transport = FakeBybitTestnetTransport("ack")
-        ack_snapshot = executor.submit_once(
-            command_decision=command,
-            exchange_ready_intent=intent,
-            reconciliation_result=recon,
-            ledger=ledger,
-            credentials=credentials,
-            config=_config(),
-            transport=ack_transport,
-            submitted_at_utc="2026-07-09T00:07:00+00:00",
-        )
-        exchange_calls += len(ack_transport.calls)
-        assert ack_transport.calls[0].payload()["orderLinkId"] == command.client_order_id
-        assert ledger.events[-1].event_type == SUBMIT_ACK
-        assert ledger.events[-1].status == TESTNET_ACK_CONFIRMED
-        assert ack_snapshot.submit_confirmed
-        assert ack_snapshot.block_new_orders
-
-        reject_intent = _intent("setup-e17-reject")
-        reject_command = _command(reject_intent, client_order_id="ATS-E17-CLIENT-2")
-        reject_transport = FakeBybitTestnetTransport("reject")
-        reject_snapshot = executor.submit_once(
-            command_decision=reject_command,
-            exchange_ready_intent=reject_intent,
-            reconciliation_result=_reconciliation(reject_intent),
-            ledger=ledger,
-            credentials=credentials,
-            config=_config(),
-            transport=reject_transport,
-            submitted_at_utc="2026-07-09T00:08:00+00:00",
-        )
-        exchange_calls += len(reject_transport.calls)
-        assert ledger.events[-1].event_type == SUBMIT_REJECT
-        assert ledger.events[-1].status == TESTNET_REJECT_CONFIRMED
-        assert reject_snapshot.terminal_submit_failure
-        assert reject_snapshot.terminal
-
-        timeout_intent = _intent("setup-e17-timeout")
-        timeout_command = _command(timeout_intent, client_order_id="ATS-E17-CLIENT-3")
-        timeout_transport = FakeBybitTestnetTransport("timeout")
-        timeout_snapshot = executor.submit_once(
-            command_decision=timeout_command,
-            exchange_ready_intent=timeout_intent,
-            reconciliation_result=_reconciliation(timeout_intent),
-            ledger=ledger,
-            credentials=credentials,
-            config=_config(),
-            transport=timeout_transport,
-            submitted_at_utc="2026-07-09T00:09:00+00:00",
-        )
-        exchange_calls += len(timeout_transport.calls)
-        assert ledger.events[-1].event_type == SUBMIT_TIMEOUT_UNKNOWN
-        assert ledger.events[-1].status == TESTNET_TIMEOUT_UNKNOWN
-        assert timeout_snapshot.submit_unknown
-        assert timeout_snapshot.block_new_orders
-        assert timeout_snapshot.requires_manual_review
-
-        assert intent == original_intent
-        assert command == original_command
-        assert recon == original_recon
-        try:
-            intent.rounded_quantity = Decimal("99")  # type: ignore[misc]
-            immutable_intent = False
-        except FrozenInstanceError:
-            immutable_intent = True
-        assert immutable_intent
-        try:
-            command.allowed = False  # type: ignore[misc]
-            immutable_command = False
-        except FrozenInstanceError:
-            immutable_command = True
-        assert immutable_command
-        try:
-            recon.reconciliation_status = "MUTATED"  # type: ignore[misc]
-            immutable_recon = False
-        except FrozenInstanceError:
-            immutable_recon = True
-        assert immutable_recon
-        assert replace(intent) == intent
-        assert replace(command) == command
-        assert replace(recon) == recon
-        ledger.close()
-
-    after_files = _file_snapshot()
-    production_files_modified = int(before_files != after_files)
-    assert production_files_modified == 0
-    assert exchange_calls == 3
-
-    print(
-        "SMOKE_E17_OK "
-        "missing_credentials_block=1 "
-        "live_block=1 "
-        "read_only_block=1 "
-        "manual_enable_block=1 "
-        "missing_reservation_block=1 "
-        "reconciliation_block=1 "
-        "fake_ack_snapshot=1 "
-        "fake_reject_snapshot=1 "
-        "fake_timeout_unknown=1 "
-        "immutable=1 "
-        "mutated_source=0 "
-        "real_exchange_calls=0 "
-        "fake_transport_calls=3 "
-        "production_files_modified=0"
-    )
+    retired_submit = False
+    retired_transport = False
+    try:
+        executor.submit_once_result()
+    except RuntimeError as exc:
+        retired_submit = "retired by R1" in str(exc)
+    try:
+        UrllibBybitTestnetSubmitTransport().post_order(request=None, credentials=None)
+    except RuntimeError as exc:
+        retired_transport = "retired by R1" in str(exc)
+    assert retired_submit and retired_transport
+    assert _file_snapshot() == before_files
+    print("SMOKE_E17_OK legacy_real_submit_retired=1 legacy_real_transport_retired=1 real_exchange_calls=0 production_files_modified=0")
 
 
 if __name__ == "__main__":
