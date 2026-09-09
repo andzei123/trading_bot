@@ -23,7 +23,7 @@ class R1CoordinatorConfig:
     emergency_max_notional:Decimal; kill_artifact_path:str; kill_source_digest:str; account_proof_expires_at_utc:str; cap_expires_at_utc:str; kill_expires_at_utc:str
 
 class R1TestnetCoordinator:
-    def __init__(self,*,config:R1CoordinatorConfig,clock:R1AuthorityClock,ledger:R1AuthorityLedger,read_authority:R1ReadAuthority,transport:R1MutationTransport,arm_issuer:R1MutationArmIssuer,reconciliation_issuer:R1ReconciliationPermitIssuer):
+    def __init__(self,*,config:R1CoordinatorConfig,clock:R1AuthorityClock,ledger:R1AuthorityLedger,read_authority:R1ReadAuthority,transport:R1MutationTransport,arm_issuer:R1MutationArmIssuer,reconciliation_issuer:R1ReconciliationPermitIssuer,startup_gate_validator:Callable[[],bool]):
         exact_testnet_origin(config.origin)
         if config.environment!="TESTNET" or not config.account_identity or not config.configuration_digest or not config.session_challenge: raise ValueError("invalid R1 TESTNET config")
         if not config.emergency_max_notional.is_finite() or config.emergency_max_notional<=0: raise ValueError("positive finite cap required")
@@ -32,15 +32,26 @@ class R1TestnetCoordinator:
             if clock.now()>=parse_utc(expiry): raise ValueError("fresh account/cap/kill authority required")
         digest,expiry=read_kill_artifact(config.kill_artifact_path,expected_account_identity=config.account_identity,clock=clock)
         if digest!=config.kill_source_digest or expiry!=config.kill_expires_at_utc: raise ValueError("kill artifact admission identity mismatch")
-        self._cfg=config; self._clock=clock; self._ledger=ledger; self._read=read_authority; self._transport=transport; self._arm_issuer=arm_issuer; self._rec_issuer=reconciliation_issuer; self._arm=None; self._closed=False
+        self._cfg=config; self._clock=clock; self._ledger=ledger; self._read=read_authority; self._transport=transport; self._arm_issuer=arm_issuer; self._rec_issuer=reconciliation_issuer; self._startup_gate_validator=startup_gate_validator; self._arm=None; self._startup_arm_committed=False; self._closed=False
+    def stage_testnet_mutation_arm(self,request:OperatorArmRequestV1):
+        if self._ledger.projection().block_mutations: return None,ArmStatus(False,"LEDGER_BLOCKED")
+        return self._arm_issuer.issue(request)
+    def publish_staged_arm(self,handle)->bool:
+        if handle is None or not self._arm_issuer.validate_arm(handle,self._ctx()): return False
+        self._arm=handle; self._startup_arm_committed=True; return True
+    def invalidate_staged_arm(self): self._arm_issuer.invalidate_all(); self._arm=None; self._startup_arm_committed=False
     def request_testnet_mutation_arm(self,request:OperatorArmRequestV1)->ArmStatus:
-        if self._ledger.projection().block_mutations: return ArmStatus(False,"LEDGER_BLOCKED")
-        self._arm,status=self._arm_issuer.issue(request); return status
-    def disarm(self): self._arm_issuer.invalidate_all(); self._rec_issuer.invalidate_all(); self._arm=None
+        if not self._startup_gate_validator(): return ArmStatus(False,"AT1_AUTHORITY_NOT_ADMITTED")
+        handle,status=self.stage_testnet_mutation_arm(request)
+        if not status.armed: return status
+        if not self.publish_staged_arm(handle): self.invalidate_staged_arm(); return ArmStatus(False,"AT1_AUTHORITY_NOT_ADMITTED")
+        return status
+    def disarm(self): self._arm_issuer.invalidate_all(); self._rec_issuer.invalidate_all(); self._arm=None; self._startup_arm_committed=False
     def close(self): self.disarm(); self._closed=True; self._ledger.close()
     def describe_disarmed_session(self): return {"environment":"TESTNET","armed":False,"query_available":True}
     def _ctx(self): return {"account_identity":self._cfg.account_identity,"configuration_digest":self._cfg.configuration_digest,"session_challenge":self._cfg.session_challenge}
     def _require_arm(self):
+        if not self._startup_arm_committed or not self._startup_gate_validator(): raise ValueError("AT1_AUTHORITY_NOT_ADMITTED")
         if self._closed or self._arm is None or not self._arm_issuer.validate_arm(self._arm,self._ctx()): raise ValueError("mutation DISARMED")
         if any(self._clock.now()>=parse_utc(x) for x in (self._cfg.account_proof_expires_at_utc,self._cfg.cap_expires_at_utc,self._cfg.kill_expires_at_utc)): raise ValueError("account/cap/kill authority expired")
         digest,expiry=read_kill_artifact(self._cfg.kill_artifact_path,expected_account_identity=self._cfg.account_identity,clock=self._clock)

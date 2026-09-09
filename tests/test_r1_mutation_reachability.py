@@ -10,7 +10,7 @@ def test_mutation_endpoint_literals_confined():
     assert hits==['backtest/execution/r1_bybit_transport.py']
 def test_facade_has_closed_surface():
     public={n for n,v in inspect.getmembers(R1TestnetProduct,inspect.isfunction) if not n.startswith('_')}
-    assert public=={'describe_disarmed_session','request_testnet_mutation_arm','disarm','create','query','cancel','close'}
+    assert public=={'describe_disarmed_session','startup_reconciliation_status','run_startup_reconciliation','request_testnet_mutation_arm','disarm','create','query','cancel','close'}
     for n in ('create','cancel'):
         params=set(inspect.signature(getattr(R1TestnetProduct,n)).parameters)
         assert not params & {'transport','permit','reconciliation_result','endpoint','credentials','ledger_writer','request_builder'}

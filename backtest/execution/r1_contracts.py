@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 R1_SCHEMA_VERSION = "ATS_R1_AUTHORITY_EVENT_V1"
-R1_TESTNET_ORIGIN = "https://api-testnet.bybit.com"
+R1_TESTNET_ORIGIN = "https://api-testnet.bybit.eu"
 CREATE_RESERVATION_TTL_US = 10_000_000
 QUERY_FRESHNESS_US = 5_000_000
 ARM_TTL_US = 15 * 60 * 1_000_000
@@ -30,7 +30,7 @@ def utc_z(dt: datetime) -> str:
 
 def exact_testnet_origin(origin: str) -> str:
     p=urlsplit(origin)
-    if p.scheme!="https" or p.hostname!="api-testnet.bybit.com" or p.port is not None or p.username or p.password or p.path not in ("",) or p.query or p.fragment:
+    if p.scheme!="https" or p.hostname!="api-testnet.bybit.eu" or p.port is not None or p.username or p.password or p.path not in ("",) or p.query or p.fragment:
         raise R1ContractError("origin is not exact Bybit TESTNET origin")
     if origin != R1_TESTNET_ORIGIN: raise R1ContractError("origin is not canonical TESTNET origin")
     return origin

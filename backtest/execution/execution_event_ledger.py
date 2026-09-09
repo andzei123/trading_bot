@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Protocol
 
@@ -1125,6 +1126,128 @@ def _utc_now() -> str:
 R1_V1_SCHEMA_VERSION = "ATS_R1_AUTHORITY_EVENT_V1"
 LEGACY_V0_FIELDS = frozenset({"sequence","canonical_setup_key","event_type","recorded_at_utc","symbol","side","client_order_id","status","block_new_orders","requires_manual_review","reason"})
 R1_V1_FIELDS = frozenset({"schema_version","sequence","operation_identity","canonical_setup_key","event_type","recorded_at_utc","environment","origin","account_identity","client_order_id","client_identity_digest","request_fingerprint","request_fingerprint_version","reservation_id","attempt_id","symbol","operation","exchange_order_id","proof_bundle_digest","classification","block_mutations","query_required","exchange_ret_code","exchange_ret_message","reason"})
+R2_V1_SCHEMA_VERSION = "ATS_R2_STARTUP_EVENT_V1"
+R2_V1_FIELDS = frozenset({"schema_version","sequence","startup_epoch_id","event_type","recorded_at_utc","origin","account_uid","parent_uid","credential_fingerprint","category","settle_coin","configuration_digest","local_snapshot_digest","local_classification","discovery_bundle_digest","discovery_cutoff_utc","reconciliation_classification","reconstructed_state_digest","block_mutations","reason_code","proof_manifest","proof_manifest_digest","disposition_manifest","disposition_manifest_digest","process_session_identity_digest","local_pre_tip_sequence","local_pre_tip_digest","activation_entry_digest","registry_root_digest","chief_activation_authority_reference","r3_execution_authority_reference"})
+R2_EVENT_TYPES = frozenset({"R2_LOCAL_CLASSIFIED","R2_DISCOVERY_STARTED","R2_ACTIVATION_CONSUMPTION_STARTED","R2_DISCOVERY_COMPLETED","R2_RECONCILED_DISARMED","R2_RECONCILIATION_UNKNOWN","R2_STARTUP_ELIGIBILITY_REVOKED","R2_OPERATOR_ARMED"})
+R2_CONSUMPTION_FIELDS = ("process_session_identity_digest","local_pre_tip_sequence","local_pre_tip_digest","activation_entry_digest","registry_root_digest","chief_activation_authority_reference","r3_execution_authority_reference")
+R2_EMPTY_LEDGER_SENTINEL_DIGEST = hashlib.sha256(b"").hexdigest()
+
+R2_PROOF_MANIFEST_FIELDS=frozenset({"manifest_schema","startup_epoch_id","server_time_start_utc","server_time_end_utc","epoch_monotonic_duration_ms","current_barrier_duration_ms","account_proof","registry_proof","retention_proof","surface_proofs","rules_proofs"})
+R2_ACCOUNT_PROOF_FIELDS=frozenset({"origin","account_uid","parent_uid","credential_fingerprint","account_mode","read_only","permissions_digest","request_digest","normalized_response_digest","observed_after_s0","observed_before_s1"})
+R2_REGISTRY_PROOF_FIELDS=frozenset({"identity_version","activation_utc","entry_digest","registry_root_digest","chief_authority_reference"})
+R2_RETENTION_PROOF_FIELDS=frozenset({"documented_horizon_seconds","safety_margin_seconds","maximum_age_seconds","age_at_s1_microseconds","oldest_request_send_offset_ms","oldest_response_receive_offset_ms","oldest_window_first","continuous_local_authority","retention_sufficient"})
+R2_SURFACE_PROOF_FIELDS=frozenset({"surface_id","http_method","endpoint_path","canonical_parameters_digest","coverage_start_utc","coverage_end_utc","first_request_offset_ms","last_response_offset_ms","request_count","page_count","record_count","ordered_page_manifest_digest","normalized_content_digest","cursor_termination","schema_contract_id","complete"})
+R2_RULES_PROOF_FIELDS=frozenset({"symbol","rules_schema_version","provenance_digest","normalized_rules_digest","observed_at_utc","expires_at_utc"})
+R2_DISPOSITION_MANIFEST_FIELDS=frozenset({"manifest_schema","proof_event_sequence","proof_manifest_digest","local_projection_digest","operation_dispositions","identity_class_counts","order_state_counts","execution_count","nonzero_position_count","open_order_count","unknown_count","blocking_reason_codes","result"})
+R2_OPERATION_DISPOSITION_FIELDS=frozenset({"local_dispatch_sequence","operation_kind","client_identity_digest","exchange_order_id_digest","remote_disposition","correlation_proof_digest"})
+
+def _r2_canonical_digest(value): return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False).encode("utf-8")).hexdigest()
+def _r2_exact_obj(value,fields,name):
+    if not isinstance(value,Mapping) or frozenset(value)!=fields: raise ExecutionEventLedgerError(name+" exact schema mismatch")
+def _validate_r2_proof_manifest(m):
+    _r2_exact_obj(m,R2_PROOF_MANIFEST_FIELDS,"proof_manifest");
+    if m.get("manifest_schema")!="ATS_R2_DISCOVERY_PROOF_MANIFEST_V1": raise ExecutionEventLedgerError("proof manifest version mismatch")
+    _r2_exact_obj(m.get("account_proof"),R2_ACCOUNT_PROOF_FIELDS,"account_proof"); _r2_exact_obj(m.get("registry_proof"),R2_REGISTRY_PROOF_FIELDS,"registry_proof"); _r2_exact_obj(m.get("retention_proof"),R2_RETENTION_PROOF_FIELDS,"retention_proof")
+    rp=m["retention_proof"]
+    if (rp.get("documented_horizon_seconds"),rp.get("safety_margin_seconds"),rp.get("maximum_age_seconds"))!=(86400,300,86100): raise ExecutionEventLedgerError("retention constants mismatch")
+    if not isinstance(m.get("surface_proofs"),list) or not m["surface_proofs"]: raise ExecutionEventLedgerError("surface proofs required")
+    for x in m["surface_proofs"]: _r2_exact_obj(x,R2_SURFACE_PROOF_FIELDS,"surface_proof")
+    if not isinstance(m.get("rules_proofs"),list): raise ExecutionEventLedgerError("rules proofs array required")
+    for x in m["rules_proofs"]: _r2_exact_obj(x,R2_RULES_PROOF_FIELDS,"rules_proof")
+    ids=[x["surface_id"] for x in m["surface_proofs"]]
+    mandatory={"SERVER_TIME_S0","API_KEY_INFO","REALTIME_OPEN_ORDERS","POSITIONS","ORDER_HISTORY_OVERLAP","EXECUTION_HISTORY_OVERLAP","SERVER_TIME_S1"}
+    if not mandatory.issubset(set(ids)) or len(ids)!=len(set(ids)) or not all(x.get("complete") is True for x in m["surface_proofs"]): raise ExecutionEventLedgerError("proof mandatory surface completeness failure")
+    order_idx=[i for i,x in enumerate(ids) if x.startswith("ORDER_HISTORY:")]
+    exec_idx=[i for i,x in enumerate(ids) if x.startswith("EXECUTION_HISTORY:")]
+    if not order_idx or not exec_idx: raise ExecutionEventLedgerError("proof historical windows required")
+    order_names=[ids[i] for i in order_idx]; exec_names=[ids[i] for i in exec_idx]
+    if order_names!=[f"ORDER_HISTORY:{i}" for i in range(len(order_names))] or exec_names!=[f"EXECUTION_HISTORY:{i}" for i in range(len(exec_names))]: raise ExecutionEventLedgerError("proof historical window order invalid")
+    expected=["SERVER_TIME_S0","API_KEY_INFO"]+order_names+exec_names+["SERVER_TIME_S1","ORDER_HISTORY_OVERLAP","EXECUTION_HISTORY_OVERLAP","REALTIME_OPEN_ORDERS","POSITIONS"]
+    if ids!=expected: raise ExecutionEventLedgerError("proof surface order invalid")
+    for x in m["surface_proofs"]:
+        if x.get("http_method")!="GET" or type(x.get("request_count")) is not int or x["request_count"]<1 or type(x.get("page_count")) is not int or x["page_count"]<1 or x["request_count"]!=x["page_count"]: raise ExecutionEventLedgerError("surface proof request/page contract invalid")
+        if type(x.get("first_request_offset_ms")) is not int or type(x.get("last_response_offset_ms")) is not int or x["first_request_offset_ms"]>x["last_response_offset_ms"]: raise ExecutionEventLedgerError("surface proof offsets invalid")
+        if not isinstance(x.get("cursor_termination"),str) or x["cursor_termination"] not in {"EMPTY_CURSOR","NO_CURSOR"}: raise ExecutionEventLedgerError("surface proof cursor termination invalid")
+    rules=m["rules_proofs"]; syms=[x.get("symbol") for x in rules]
+    if syms!=sorted(set(syms)): raise ExecutionEventLedgerError("rules proof order/uniqueness invalid")
+    try:
+        s0=datetime.fromisoformat(str(m["server_time_start_utc"]).replace("Z","+00:00")); s1=datetime.fromisoformat(str(m["server_time_end_utc"]).replace("Z","+00:00"))
+    except Exception as exc: raise ExecutionEventLedgerError("proof server time invalid") from exc
+    if s1<s0 or type(m.get("epoch_monotonic_duration_ms")) is not int or not (0<=m["epoch_monotonic_duration_ms"]<=120000) or type(m.get("current_barrier_duration_ms")) is not int or not (0<=m["current_barrier_duration_ms"]<=30000): raise ExecutionEventLedgerError("proof freshness bounds invalid")
+    by_id={x["surface_id"]:x for x in m["surface_proofs"]}
+    c=(s0-timedelta(seconds=60)).isoformat(timespec="microseconds").replace("+00:00","Z")
+    for sid in ("ORDER_HISTORY_OVERLAP","EXECUTION_HISTORY_OVERLAP"):
+        x=by_id[sid]
+        if x.get("coverage_start_utc")!=c or x.get("coverage_end_utc")!=m["server_time_end_utc"]: raise ExecutionEventLedgerError("proof overlap coverage invalid")
+        if x["first_request_offset_ms"] < by_id["SERVER_TIME_S1"]["last_response_offset_ms"]: raise ExecutionEventLedgerError("proof overlap precedes S1")
+    overlap_end=max(by_id["ORDER_HISTORY_OVERLAP"]["last_response_offset_ms"],by_id["EXECUTION_HISTORY_OVERLAP"]["last_response_offset_ms"])
+    if by_id["REALTIME_OPEN_ORDERS"]["first_request_offset_ms"] < overlap_end or by_id["POSITIONS"]["first_request_offset_ms"] < overlap_end: raise ExecutionEventLedgerError("proof current snapshot precedes overlap completion")
+    if rp.get("retention_sufficient") is True and (type(rp.get("age_at_s1_microseconds")) is not int or not (0<=rp["age_at_s1_microseconds"]<86100*1000000) or rp.get("oldest_window_first") is not True): raise ExecutionEventLedgerError("retention success predicate invalid")
+    for x in rules:
+        try: exp=datetime.fromisoformat(str(x["expires_at_utc"]).replace("Z","+00:00"))
+        except Exception as exc: raise ExecutionEventLedgerError("rules expiry invalid") from exc
+        if exp < s1+timedelta(seconds=60): raise ExecutionEventLedgerError("rules proof does not cover capability lifetime")
+def _validate_r2_disposition_manifest(m):
+    _r2_exact_obj(m,R2_DISPOSITION_MANIFEST_FIELDS,"disposition_manifest")
+    if m.get("manifest_schema")!="ATS_R2_RECONCILIATION_DISPOSITION_V1": raise ExecutionEventLedgerError("disposition manifest version mismatch")
+    if not isinstance(m.get("operation_dispositions"),list) or not isinstance(m.get("blocking_reason_codes"),list): raise ExecutionEventLedgerError("disposition arrays invalid")
+    for x in m["operation_dispositions"]: _r2_exact_obj(x,R2_OPERATION_DISPOSITION_FIELDS,"operation_disposition")
+
+@dataclass(frozen=True)
+class R2StartupEvent:
+    schema_version:str; sequence:int; startup_epoch_id:str; event_type:str; recorded_at_utc:str; origin:str; account_uid:int; parent_uid:int; credential_fingerprint:str; category:str; settle_coin:str; configuration_digest:str
+    local_snapshot_digest:object; local_classification:object; discovery_bundle_digest:object; discovery_cutoff_utc:object; reconciliation_classification:object; reconstructed_state_digest:object; block_mutations:bool; reason_code:str
+    proof_manifest:object; proof_manifest_digest:object; disposition_manifest:object; disposition_manifest_digest:object
+    process_session_identity_digest:object; local_pre_tip_sequence:object; local_pre_tip_digest:object; activation_entry_digest:object; registry_root_digest:object; chief_activation_authority_reference:object; r3_execution_authority_reference:object
+
+def _validate_r2_event_obj(obj,line_no=0,prior=(),expected_pre_tip_digest=None):
+    loc=f" at line {line_no}" if line_no else ""
+    if frozenset(obj)!=R2_V1_FIELDS: raise ExecutionEventLedgerError("R2 exact field set mismatch"+loc)
+    if obj.get("schema_version")!=R2_V1_SCHEMA_VERSION or obj.get("event_type") not in R2_EVENT_TYPES: raise ExecutionEventLedgerError("R2 schema/event mismatch"+loc)
+    if type(obj.get("sequence")) is not int or obj["sequence"]<1 or type(obj.get("account_uid")) is not int or type(obj.get("parent_uid")) is not int or type(obj.get("block_mutations")) is not bool: raise ExecutionEventLedgerError("R2 scalar type mismatch"+loc)
+    if obj.get("origin")!="https://api-testnet.bybit.eu" or obj.get("account_uid")!=107087555 or obj.get("parent_uid")!=0 or obj.get("category")!="linear" or obj.get("settle_coin")!="USDT": raise ExecutionEventLedgerError("R2 authority context mismatch"+loc)
+    for f in ("startup_epoch_id","recorded_at_utc","credential_fingerprint","configuration_digest","reason_code"):
+        if not isinstance(obj.get(f),str) or not obj[f]: raise ExecutionEventLedgerError("R2 required string invalid: "+f+loc)
+    proof=obj.get("proof_manifest"); pd=obj.get("proof_manifest_digest"); disp=obj.get("disposition_manifest"); dd=obj.get("disposition_manifest_digest")
+    if (proof is None)!=(pd is None) or (disp is None)!=(dd is None): raise ExecutionEventLedgerError("R2 manifest/digest nullability mismatch"+loc)
+    if proof is not None:
+        _validate_r2_proof_manifest(proof)
+        if not isinstance(pd,str) or pd!=_r2_canonical_digest(proof): raise ExecutionEventLedgerError("proof manifest digest mismatch"+loc)
+    if disp is not None:
+        _validate_r2_disposition_manifest(disp)
+        if not isinstance(dd,str) or dd!=_r2_canonical_digest(disp): raise ExecutionEventLedgerError("disposition manifest digest mismatch"+loc)
+    if obj["event_type"]=="R2_DISCOVERY_COMPLETED" and (proof is None or disp is not None): raise ExecutionEventLedgerError("discovery-completed manifest contract invalid"+loc)
+    if obj["event_type"]=="R2_RECONCILED_DISARMED" and (proof is None or disp is None or disp.get("result")!="RECONCILED_CLEAN"): raise ExecutionEventLedgerError("reconciled-disarmed manifest contract invalid"+loc)
+    if obj["event_type"]=="R2_RECONCILED_DISARMED":
+        same=[e for e in prior if getattr(e,"startup_epoch_id",None)==obj["startup_epoch_id"]]
+        pe=[e for e in same if getattr(e,"sequence",None)==disp.get("proof_event_sequence") and getattr(e,"event_type",None)=="R2_DISCOVERY_COMPLETED"]
+        if len(pe)!=1 or getattr(pe[0],"proof_manifest_digest",None)!=pd or disp.get("proof_manifest_digest")!=pd: raise ExecutionEventLedgerError("reconciled proof reference invalid"+loc)
+        if disp.get("unknown_count")!=0 or disp.get("open_order_count")!=0 or disp.get("nonzero_position_count")!=0 or disp.get("blocking_reason_codes")!=[] or obj.get("reconciliation_classification") not in (None,"RECONCILED_CLEAN"): raise ExecutionEventLedgerError("reconciled clean predicate invalid"+loc)
+    is_c=obj["event_type"]=="R2_ACTIVATION_CONSUMPTION_STARTED"
+    if is_c:
+        if any(obj.get(f) is not None for f in ("proof_manifest","proof_manifest_digest","disposition_manifest","disposition_manifest_digest")): raise ExecutionEventLedgerError("consumption manifest fields must be null"+loc)
+        import re as _re
+        for f in ("process_session_identity_digest","local_pre_tip_digest","activation_entry_digest","registry_root_digest"):
+            if not isinstance(obj.get(f),str) or not _re.fullmatch(r"[0-9a-f]{64}",obj[f]): raise ExecutionEventLedgerError("consumption digest invalid: "+f+loc)
+        if type(obj.get("local_pre_tip_sequence")) is not int or obj["local_pre_tip_sequence"]<0 or obj["local_pre_tip_sequence"]!=obj["sequence"]-1: raise ExecutionEventLedgerError("consumption pre-tip sequence invalid"+loc)
+        for f in ("chief_activation_authority_reference","r3_execution_authority_reference"):
+            if not isinstance(obj.get(f),str) or not obj[f] or obj[f].strip()!=obj[f]: raise ExecutionEventLedgerError("consumption reference invalid"+loc)
+        if obj.get("block_mutations") is not True or obj.get("reason_code")!="ACTIVATION_CONSUMED_BEFORE_DISCOVERY": raise ExecutionEventLedgerError("consumption disposition invalid"+loc)
+        same=[e for e in prior if getattr(e,"startup_epoch_id",None)==obj["startup_epoch_id"]]
+        if any(getattr(e,"event_type","")=="R2_ACTIVATION_CONSUMPTION_STARTED" for e in same): raise ExecutionEventLedgerError("duplicate activation consumption"+loc)
+        if any(getattr(e,"event_type","") in {"R2_DISCOVERY_COMPLETED","R2_RECONCILED_DISARMED","R2_OPERATOR_ARMED"} for e in same): raise ExecutionEventLedgerError("illegal pre-consumption ordering"+loc)
+        if obj["local_pre_tip_sequence"]==0 and obj["local_pre_tip_digest"]!=R2_EMPTY_LEDGER_SENTINEL_DIGEST: raise ExecutionEventLedgerError("empty-ledger sentinel mismatch"+loc)
+        if expected_pre_tip_digest is not None and obj["local_pre_tip_digest"]!=expected_pre_tip_digest: raise ExecutionEventLedgerError("consumption physical pre-tip digest mismatch"+loc)
+    else:
+        if any(obj.get(f) is not None for f in R2_CONSUMPTION_FIELDS): raise ExecutionEventLedgerError("non-consumption fields must be null"+loc)
+        if obj["event_type"] in {"R2_DISCOVERY_STARTED","R2_DISCOVERY_COMPLETED","R2_RECONCILED_DISARMED","R2_RECONCILIATION_UNKNOWN","R2_STARTUP_ELIGIBILITY_REVOKED","R2_OPERATOR_ARMED"}:
+            same=[e for e in prior if getattr(e,"startup_epoch_id",None)==obj["startup_epoch_id"]]
+            if len([e for e in same if getattr(e,"event_type",None)=="R2_ACTIVATION_CONSUMPTION_STARTED"])!=1: raise ExecutionEventLedgerError("R2 event requires earlier same-epoch activation consumption"+loc)
+        if obj["event_type"]=="R2_RECONCILED_DISARMED":
+            same=[e for e in prior if getattr(e,"startup_epoch_id",None)==obj["startup_epoch_id"]]
+            proofs=[e for e in same if getattr(e,"event_type",None)=="R2_DISCOVERY_COMPLETED"]
+            if len(proofs)!=1 or disp.get("proof_event_sequence")!=proofs[0].sequence or disp.get("proof_manifest_digest")!=proofs[0].proof_manifest_digest: raise ExecutionEventLedgerError("reconciled proof reference mismatch"+loc)
+
 R1_EVENT_TYPES = frozenset({"CREATE_RESERVED","CREATE_RESERVATION_EXPIRED","CREATE_DISPATCHING","CREATE_ACK_PENDING_QUERY","CREATE_REJECT_CONFIRMED","CREATE_UNKNOWN","QUERY_OBSERVED","CANCEL_DISPATCHING","CANCEL_ACK_PENDING_QUERY","CANCEL_CONFIRMED","CANCEL_NOT_EFFECTIVE_TERMINAL","CANCEL_NOT_CONFIRMED","CANCEL_UNKNOWN","AUTHORITY_BLOCKED","IDENTITY_CONFLICT"})
 
 @dataclass(frozen=True)
@@ -1150,9 +1273,11 @@ def _r1_pairs_object(pairs):
 
 def _parse_union_records(raw: bytes):
     if raw and not raw.endswith(b"\n"): raise ExecutionEventLedgerError("truncated persisted execution ledger write")
-    union=[]; legacy=[]; r1=[]
-    for line_no,line in enumerate(raw.splitlines(),1):
+    union=[]; legacy=[]; r1=[]; r2=[]; physical_prefix=b""
+    for line_no,line_with_newline in enumerate(raw.splitlines(keepends=True),1):
+        line=line_with_newline[:-1] if line_with_newline.endswith(b"\n") else line_with_newline
         if not line.strip(): raise ExecutionEventLedgerError(f"blank persisted execution ledger record at line {line_no}")
+        expected_pre_tip_digest=hashlib.sha256(physical_prefix).hexdigest()
         try: obj=json.loads(line.decode("utf-8"),object_pairs_hook=_r1_pairs_object)
         except (UnicodeDecodeError,json.JSONDecodeError) as exc: raise ExecutionEventLedgerError(f"malformed persisted execution ledger record at line {line_no}") from exc
         if not isinstance(obj,Mapping): raise ExecutionEventLedgerError(f"persisted execution ledger record must be an object at line {line_no}")
@@ -1167,26 +1292,38 @@ def _parse_union_records(raw: bytes):
                 if not isinstance(obj.get(f),str): raise ExecutionEventLedgerError(f"invalid R1 {f} at line {line_no}")
             if type(obj.get("block_mutations")) is not bool or type(obj.get("query_required")) is not bool: raise ExecutionEventLedgerError(f"invalid R1 boolean at line {line_no}")
             parsed=R1AuthorityEvent(**obj); r1.append(parsed)
+        elif keys==R2_V1_FIELDS:
+            _validate_r2_event_obj(obj,line_no,r2,expected_pre_tip_digest); parsed=R2StartupEvent(**obj); r2.append(parsed)
         else: raise ExecutionEventLedgerError(f"persisted execution ledger schema mismatch at line {line_no}")
         if parsed.sequence!=len(union)+1: raise ExecutionEventLedgerError(f"persisted execution ledger sequence gap/conflict at line {line_no}: expected {len(union)+1}, got {parsed.sequence}")
-        union.append(parsed)
+        union.append(parsed); physical_prefix += line_with_newline
     # Preserve legacy projection semantics by validating V0 relative order with sequence-renumbered copies.
     normalized=[ExecutionLedgerEvent(**{**asdict(e),"sequence":i}) for i,e in enumerate(legacy,1)]
     for key in sorted({e.canonical_setup_key for e in normalized}):
         rebuild_execution_lifecycle_snapshot(normalized,key); rebuild_execution_state_snapshot(normalized,key)
-    return tuple(union),tuple(legacy),tuple(r1)
+    return tuple(union),tuple(legacy),tuple(r1),tuple(r2)
 
 class R1AuthorityLedger:
     def __init__(self, path:str|Path, *, persistence_phase_observer:Callable[[str],None]|None=None):
         self._path=Path(path).resolve(); self._path.parent.mkdir(parents=True,exist_ok=True); self._owner=_LedgerWriterOwnership(self._path); self._observer=persistence_phase_observer; self._health=PERSISTENCE_HEALTHY
         try:
             if _persistence_temp_path(self._path).exists(): raise ExecutionEventLedgerError("interrupted durable replacement artifact exists")
-            raw=self._path.read_bytes() if self._path.exists() else b""; self._union,self._legacy,self._r1=_parse_union_records(raw)
+            raw=self._path.read_bytes() if self._path.exists() else b""; self._union,self._legacy,self._r1,self._r2=_parse_union_records(raw)
         except Exception: self.close(); raise
     @property
     def events(self): return self._r1
     @property
+    def r2_events(self): return self._r2
+    @property
+    def union_events(self): return self._union
+    @property
     def persistence_health(self): return self._health
+    def physical_tip(self):
+        raw=self._path.read_bytes() if self._path.exists() else b""
+        return len(self._union), hashlib.sha256(raw).hexdigest()
+    def exact_reread(self):
+        raw=self._path.read_bytes() if self._path.exists() else b""
+        return _parse_union_records(raw)
     def projection(self)->R1LedgerProjection:
         unresolved=False; block=False
         by_attempt={}
@@ -1213,6 +1350,21 @@ class R1AuthorityLedger:
         except Exception as exc:
             self._health=PERSISTENCE_STATE_UNKNOWN; raise PersistenceStateUnknownError("R1 persistent write outcome unknown") from exc
         self._union=tuple(list(self._union)+[ev]); self._r1=tuple(list(self._r1)+[ev]); _emit_persistence_phase(self._observer,COMMIT_ACKNOWLEDGED); return ev
+    def append_r2(self, **fields)->R2StartupEvent:
+        if self._health!=PERSISTENCE_HEALTHY: raise PersistenceStateUnknownError("R2 persistence state unknown")
+        ev=R2StartupEvent(schema_version=R2_V1_SCHEMA_VERSION,sequence=len(self._union)+1,**fields)
+        _validate_r2_event_obj(asdict(ev),0,self._r2,self.physical_tip()[1] if ev.event_type=="R2_ACTIVATION_CONSUMPTION_STARTED" else None)
+        all_records=[asdict(x) for x in self._union]+[asdict(ev)]
+        payload="".join(json.dumps(x,sort_keys=True)+"\n" for x in all_records)
+        tmp=_persistence_temp_path(self._path)
+        try:
+            _same_directory_same_volume(tmp,self._path); _emit_persistence_phase(self._observer,BEFORE_TEMP_CREATE)
+            with tmp.open("x",encoding="utf-8",newline="") as h:
+                _emit_persistence_phase(self._observer,TEMP_WRITING); h.write(payload); _platform_durability_adapter().flush_file(h)
+            _emit_persistence_phase(self._observer,TEMP_FLUSHED); _durable_replace(tmp,self._path,phase_observer=self._observer)
+        except Exception as exc:
+            self._health=PERSISTENCE_STATE_UNKNOWN; raise PersistenceStateUnknownError("R2 persistent write outcome unknown") from exc
+        self._union=tuple(list(self._union)+[ev]); self._r2=tuple(list(self._r2)+[ev]); _emit_persistence_phase(self._observer,COMMIT_ACKNOWLEDGED); return ev
     def close(self):
         if getattr(self,"_owner",None): self._owner.release(); self._owner=None
     def __enter__(self): return self
